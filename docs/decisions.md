@@ -1,0 +1,47 @@
+# Decisions ledger
+
+Mutable ledger of approval status, resolved questions, and open work. Normative facts live in `docs/specs/project/scope.md` and the per-type specs it indexes; this file records how each fact was decided and what remains open.
+
+Status labels and marker vocabulary are normative in `docs/specs/project/scope.md`.
+
+## Framing facts
+
+Every load-bearing fact about `znvme` — package identity, purpose, ownership boundary, dependency posture, marker vocabulary, status labels, transcription sources, spec index, non-goals, deferred seams — is normative in [`docs/specs/project/scope.md`](specs/project/scope.md). Do not restate framing facts here.
+
+Consult this file for:
+
+- how a question was resolved;
+- what is under review or open;
+- which pieces of the design are not locked yet.
+
+## Resolved questions
+
+- **NVMe specification revision: 2.0.** `[Approved]` Specs transcribe from the NVMe Base Specification 2.0 plus the NVM Command Set Specification 1.0. 2.0 is backward-compatible for the surface `znvme` owns: the controller register block (CAP/CC/CSTS/AQA/ASQ/ACQ/doorbells) and the admin set used (Identify, Create/Delete I/O SQ/CQ, Set Features) are unchanged from 1.4. The conventional block-SSD boot path uses `CC.CSS = 0` (NVM Command Set); Read/Write/Flush opcodes are unchanged. The Identify Controller/Namespace specs note 2.0 CNS/CSI fields.
+- **I/O queue pairs: caller-owned, count-flexible.** `[Approved]` `znvme` owns one admin pair plus N caller-owned I/O pairs, where N comes from `admin.NumberOfQueues.set` / `.get` and its `Allocated` response. The queue types (`SubmissionQueue`, `CompletionQueue(Backend)`, `Pair(Backend)`) are role-agnostic and per-pair caller-serialized; the caller holds `[]Pair(Backend)` (or however many named pair values it prefers) and routes work by its own policy — per CPU core, per stream, per namespace. znvme owns no queue-set aggregate, no scheduler, and no cross-pair sharing. This lands from day one because it's additive over already-approved types: prose changes only. Interrupt-driven completion stays deferred (`docs/specs/project/scope.md`); a hypothetical max-throughput consumer polls harder and batches, not switches to interrupts (per-completion IRQ overhead is 1.5–3 μs on x86; PCIe 5.0 x4 NVMe posts a completion every ~400 ns).
+- **Batched submit and drain from day one.** `[Approved]` `SubmissionQueue.commit` is split into `stage` (infallible, advances tail, no MMIO) and `flush` (fallible, rings SQ tail doorbell exactly once for however many entries were staged since the last ring). `CompletionQueue(Backend).poll(out, deadline, backoff)` and `Pair(Backend).poll(out, deadline, backoff)` drain contiguous matched CQEs into a caller-owned slice with a single CQ head doorbell ring; `pollOne` sugar remains for boot-reader ergonomics. Admin and NVM builders end with `sq.stage(reservation)` instead of `sq.commit(reservation)` and the caller flushes when it's ready. Boot readers pay two extra lines (`try sq.flush()` before `pollOne`); throughput consumers pay one doorbell per batch. This lands from day one because it's the type-system shape that supports the multi-queue decision above: pushing it to a later spec would break every builder's signature. Owned by `docs/specs/controller/queue.md`; downstream builders in `docs/specs/commands/admin.md` and `docs/specs/commands/nvm.md` end with `stage`.
+- **DMA types sourced from zstdx.** `[Approved]` `znvme` composes `stdx.dma.Buffer(T)` and `stdx.dma.ScatterGather` from `../zstdx/docs/specs/dma/buffer.md` and `../zstdx/docs/specs/dma/scatter-gather.md`. Device addresses use `stdx.addr.DmaAddr` (`Address(DmaTag, u64)`), distinct at type level from `PhysAddr`. `znvme` does not own a wrapper type; queue-pair storage, PRP payloads, Identify buffers, and controller-pointer registers use the upstream types directly. NVMe-specific policy (page alignment against `CC.MPS`, PRP interior/last split) lives in the consuming `znvme` specs. Delegation record: `docs/specs/core/dma.md`.
+- **Public import name: `nvme`.** `[Approved]` The public module is `nvme` (domain name, matching zacpi's `acpi`). How `zfw` wires the dependency into its own `build.zig.zon` is `zfw`'s decision, not `znvme`'s.
+- **Repository baseline.** `[Approved]` `build.zig.zon` name `znvme`, version `0.0.0`, `minimum_zig_version = "0.16.0"`, one dependency: `.stdx = .{ .path = "../zstdx" }`. `zig build test` runs the host suite; `zig build check` type-checks the `nvme` module for `x86_64-freestanding` to prove wire-layout ABI assertions off-host.
+- **Domain-neutral primitives sourced from zstdx.** `[Approved]` `znvme` imports `@import("stdx")` and delegates every domain-neutral primitive to it. Import name is `stdx`. Missing primitives are proposed upstream against `../zstdx` before the consuming `znvme` spec lands; `znvme` does not implement local replacements.
+- **Injected time-source contract.** `[Approved]` The monotonic source is `stdx.time.Clock.Monotonic(Backend)` from `../zstdx/docs/specs/time/monotonic.md`. `Backend` is a caller-supplied comptime type exposing `pub fn now(self: *Backend) stdx.time.Instant`. `Controller` and its command completion loops are generic over `Backend`; `zfw` supplies an HPET backend, tests supply a counter backend. Timeouts are expressed as `stdx.time.Duration`; deadlines use `Instant.add` and `Instant.afterOrEq`. `znvme` never touches wall time or blocking waits — the polling loop is caller-driven with `stdx.arch.x86_64.Cpu.pause()` between iterations.
+- **Little-endian first slice.** `[Approved]` `znvme` targets little-endian `x86_64-freestanding-none`; wire readers and writers may assume native little-endian in the first slice. Big-endian host/target compatibility is deferred in `docs/specs/project/scope.md`.
+- **Identify Controller wire offsets follow NVMe 2.0 Figure 275.** `[Approved]` `SGLS` is at byte `0x218` and `SUBNQN` is at byte `0x300`; earlier drafts placed `SGLS` at `0x230` and `SUBNQN` at `0x400`, which is the NVMe 1.2 layout. NVMe 1.4 added `ICSVSCC`, `NWPC`, `ACWU`, `OCFS` between `AWUPF` and `SGLS`, and NVMe 2.0 kept those. Fields between `SGLS` and `SUBNQN` (`MNAN`, `MAXDNA`, `MAXCNA`, `OAQD`, ANA reporting, memory-range tracking, migration queues, CDQ) and the fabrics region between `SUBNQN` and the power-state descriptors are still deferred; the extern struct carves them as reserved padding so the boot-path accessors stay wire-correct. Cross-checked against Linux `include/linux/nvme.h` `struct nvme_id_ctrl` (subnqn at offset 768, sgls at offset 536). Owned by `docs/specs/identify/controller.md`.
+- **Admin builders drop the `command_id` Params field.** `[Approved]` `SubmissionQueue.reserveSlot` allocates every CID from its bounded `TagAllocator.Bounded(CidDomain, u16)` pool; the reservation is authoritative. A caller-supplied `command_id` was ignored on the wire (`Sqe.Builder.init` writes `reservation.command_id`) and asserted equal to the reservation's value, which the caller has no way to predict. All admin `Params` structs (`ControllerParams`, `NamespaceParams`, `ActiveListParams`, `CreateIoSubmissionQueue.Params`, `CreateIoCompletionQueue.Params`, `DeleteIoSubmissionQueue.Params`, `DeleteIoCompletionQueue.Params`, `Abort.Params`, `NumberOfQueues.SetParams`, and the now-removed `NumberOfQueues.GetParams`) lose the field. Callers pair completions with the CID carried on the returned `queue.Handle`. `Abort.target_command_id` stays: it is a wire field naming the *target* command being aborted, distinct from the submitter's own CID. Owned by `docs/specs/commands/admin.md`.
+- **Controller state machine exposes `reset` only; `disable` is folded in.** `[Approved]` Per NVMe Base Specification 2.0 §3.7, writing `CC.EN = 0` *is* Controller Reset — there is no separate "disable" transition. `Controller.reset` is idempotent (no CC write when `CC.EN == 0` already) and produces the same post-conditions the removed `Controller.disable` did (`CSTS.RDY == 0`, `admin.pair = null`, `state = .disabled`). The `Controller.State.disabled` variant stays; the `Cc.disabled()` register-value constructor in `docs/specs/core/registers.md` stays. Owned by `docs/specs/controller/init.md`.
+- **`Nsid.invalid` renamed to `Nsid.none`.** `[Approved]` NVMe spells `NSID = 0` as "no namespace"; passing `.invalid` to admin commands that legitimately clear NSID (Identify Controller, Number of Queues, Create/Delete I/O SQ/CQ, Abort) reads as "please encode an invalid namespace" when the caller is doing the correct thing. `Nsid.none` matches the ergonomic reading. Predicate follows suit: `isNone()` replaces `isInvalid()`. `Nsid.broadcast` and `isBroadcast()` are unchanged. Owned by `docs/specs/core/ids.md`.
+
+## Open questions
+
+_(none)_
+
+## Not locked yet
+
+The following are not fixed until the owning spec marks them `[Approved]`:
+
+- concrete `znvme`-owned Zig type definitions beyond what `docs/specs/project/scope.md` names;
+- the exact register-block field set and per-field access rules (`docs/specs/core/registers.md`);
+- the exact SQE/CQE field layouts and command-builder APIs (`docs/specs/commands/sqe.md`, `docs/specs/commands/cqe.md`);
+- the exact Identify Controller / Identify Namespace field sets exposed by views (`docs/specs/identify/*.md`);
+- the exact PRP-list construction thresholds (`docs/specs/core/prp.md`);
+- the exact namespace-geometry aggregate (`docs/specs/identify/namespace.md`);
+- whether any deferred seam listed in `docs/specs/project/scope.md` is promoted into scope.
