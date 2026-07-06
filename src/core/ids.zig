@@ -36,6 +36,7 @@ pub const Nsid = struct {
         return self.raw() == 0xFFFF_FFFF;
     }
 
+    /// True iff `self` is neither `none` nor `broadcast` — a real namespace target.
     pub fn isValidNamespace(self: Nsid) bool {
         const v = self.raw();
         return v != 0x0000_0000 and v != 0xFFFF_FFFF;

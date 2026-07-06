@@ -7,7 +7,10 @@ const ids = @import("../core/ids.zig");
 
 const Nsid = ids.Nsid;
 
+/// Size of the Identify Namespace payload (CNS 00h) on the wire.
 pub const size_bytes: usize = 4096;
+
+/// Maximum LBA-format entries the spec reserves in the response.
 pub const max_lba_formats: usize = 64;
 
 pub const Error = error{
@@ -21,6 +24,7 @@ pub const Error = error{
     EntryIndexOutOfRange,
 };
 
+/// Protection Information Type (`DPS.PIT`). Non-exhaustive.
 pub const Pit = enum(u3) {
     disabled = 0b000,
     type_1 = 0b001,
@@ -29,6 +33,7 @@ pub const Pit = enum(u3) {
     _,
 };
 
+/// Deallocate/Unwritten read-return behavior (`DLFEAT[2:0]`). Non-exhaustive.
 pub const DeallocateReadBehavior = enum(u3) {
     not_reported = 0b000,
     read_zeros = 0b001,
@@ -36,6 +41,7 @@ pub const DeallocateReadBehavior = enum(u3) {
     _,
 };
 
+/// Namespace Features (`NSFEAT`). One flag per optional feature.
 pub const NsFeatBits = packed struct(u8) {
     thin_provisioning: u1,
     namespace_atomic_boundaries: u1,
@@ -50,6 +56,8 @@ pub const NsFeatBits = packed struct(u8) {
     }
 };
 
+/// Metadata Capabilities (`MC`). Which metadata-transport shapes the
+/// namespace supports.
 pub const McBits = packed struct(u8) {
     extended_lba: u1,
     separate_buffer: u1,
@@ -61,6 +69,7 @@ pub const McBits = packed struct(u8) {
     }
 };
 
+/// End-to-end Data Protection Capabilities (`DPC`).
 pub const DpcBits = packed struct(u8) {
     pi_type_1: u1,
     pi_type_2: u1,
@@ -75,6 +84,7 @@ pub const DpcBits = packed struct(u8) {
     }
 };
 
+/// End-to-end Data Protection Settings (`DPS`).
 pub const DpsBits = packed struct(u8) {
     pit: Pit,
     pi_position_first_bytes: u1,
@@ -86,6 +96,7 @@ pub const DpsBits = packed struct(u8) {
     }
 };
 
+/// Deallocate Logical Block Features (`DLFEAT`).
 pub const DlfeatBits = packed struct(u8) {
     read_behavior: DeallocateReadBehavior,
     write_zeroes_deallocate: u1,
@@ -98,6 +109,8 @@ pub const DlfeatBits = packed struct(u8) {
     }
 };
 
+/// One entry of the LBA Format table (`LBAF[i]`). Data size is a power-of-two
+/// shift; metadata size is a raw byte count.
 pub const LbaFormat = packed struct(u32) {
     metadata_size: u16,
     lba_data_size_shift: u8,
@@ -131,6 +144,8 @@ pub const LbaFormat = packed struct(u32) {
     }
 };
 
+/// Derived per-namespace geometry: LBA size, metadata size, transfer stride
+/// (extended vs separate metadata), and total block count.
 pub const Geometry = struct {
     format: LbaFormat,
 
@@ -173,6 +188,10 @@ pub const Geometry = struct {
     }
 };
 
+/// 4096-byte Identify Namespace (CNS 00h) response. Underscore-prefixed
+/// storage fields carry wire bytes; typed accessors decode. Fabricate for
+/// tests via `IdentifyNamespace.init(target, params)`; production readers
+/// borrow through `IdentifyNamespace.validate(bytes)`.
 pub const IdentifyNamespace = extern struct {
     _nsze: u64 = 0,
     _ncap: u64 = 0,
@@ -283,10 +302,13 @@ pub const IdentifyNamespace = extern struct {
         return @bitCast(self._nsfeat);
     }
 
+    /// `NLBAF` is 0-based on the wire; return the 1-based entry count.
     pub fn numberOfLbaFormats(self: *const IdentifyNamespace) u7 {
         return @as(u7, @intCast(self._nlbaf & 0x3F)) + 1;
     }
 
+    /// Selected LBA-format index from split `FLBAS` fields: low nibble
+    /// (`FLBAS[3:0]`) plus high two bits (`FLBAS[6:5]`) shifted into place.
     pub fn formatIndex(self: *const IdentifyNamespace) u6 {
         const low: u6 = @intCast(self._flbas & 0xf);
         const high: u6 = @intCast((self._flbas >> 5) & 0x3);
@@ -392,6 +414,8 @@ pub const IdentifyNamespace = extern struct {
     }
 };
 
+/// 4096-byte Active Namespace ID list (CNS 02h). Entries are zero-terminated:
+/// the first `0` marks the end of the list.
 pub const List = extern struct {
     _entries: [max_entries]u32 = @splat(0),
 
@@ -436,6 +460,8 @@ pub const List = extern struct {
         return Nsid.from(self._entries[index]);
     }
 
+    /// Populated entry count. NVMe terminates the list at the first zero
+    /// entry; returns `max_entries` when the list fills the whole page.
     pub fn entryCount(self: *const List) u16 {
         var i: u16 = 0;
         while (i < max_entries) : (i += 1) {

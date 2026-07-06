@@ -8,8 +8,13 @@ const Cid = ids.Cid;
 const CompletionStatus = @import("../core/status.zig").CompletionStatus;
 const Qid = ids.Qid;
 
+/// Size of one CQE on the wire.
 pub const size_bytes: usize = 16;
 
+/// 16-byte NVMe Completion Queue Entry. Underscore-prefixed storage fields
+/// carry wire bytes; typed accessors decode. Author in place via
+/// `Cqe.init(target, params)` (tests and diagnostics); production readers use
+/// the accessors on device-written bytes.
 pub const Cqe = extern struct {
     _dw0: u32 = 0,
     _dw1: u32 = 0,
@@ -62,6 +67,10 @@ pub const Cqe = extern struct {
         return .from(self._status);
     }
 
+    /// Read the phase bit through a monotonic atomic load. This is the only
+    /// CQE field callers may read without a preceding
+    /// `stdx.barrier.dma.acquire()`; every other decoded field requires the
+    /// acquire fence between phase match and read (see `queue.CompletionQueue`).
     pub fn phase(self: *const Cqe) bool {
         const raw_status = @atomicLoad(u16, &self._status, .monotonic);
         return (raw_status & 0x1) != 0;
@@ -71,6 +80,8 @@ pub const Cqe = extern struct {
         return self.status().isSuccess();
     }
 
+    /// True iff `phase()` matches `expected_phase` AND the status decodes to
+    /// generic-success. Composes phase and status in one call.
     pub fn isPostedSuccess(self: *const Cqe, expected_phase: bool) bool {
         return self.phase() == expected_phase and self.statusIsSuccess();
     }

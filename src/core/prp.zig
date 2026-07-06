@@ -19,6 +19,7 @@ pub const Error = error{
     Overflow,
 };
 
+/// Single 64-bit PRP entry: `DmaAddr` in host byte order on the wire.
 pub const PrpEntry = extern struct {
     value: u64,
 
@@ -46,6 +47,8 @@ pub const PrpEntry = extern struct {
     }
 };
 
+/// SQE PRP field pair (PRP1, PRP2). `fromContiguous` picks between inline
+/// PRP2 and a caller-supplied PRP list based on transfer size.
 pub const DataPointers = extern struct {
     prp1: PrpEntry,
     prp2: PrpEntry = .zero,
@@ -55,12 +58,17 @@ pub const DataPointers = extern struct {
         .prp2 = .zero,
     };
 
+    /// `prp_list_output` is required only when the transfer spans more than
+    /// two pages; otherwise leave it `null` and PRP2 goes inline.
     pub const Contiguous = struct {
         payload: stdx.dma.Buffer(u8),
         page_size: PageSize,
         prp_list_output: ?PrpList = null,
     };
 
+    /// Compose PRP1/PRP2 for a contiguous transfer. Transfers up to one page
+    /// use PRP1 alone; up to two pages inline PRP2; beyond that a caller-owned
+    /// `PrpList` fills with page-aligned entries and PRP2 points at its base.
     pub fn fromContiguous(input: Contiguous) Error!DataPointers {
         const payload = input.payload;
         const page_size = input.page_size;
@@ -117,6 +125,8 @@ pub const DataPointers = extern struct {
     }
 };
 
+/// PRP1 for I/O queue base pages. Same wire encoding as an SQE PRP1 but the
+/// queue base must be page-aligned, not merely dword-aligned.
 pub const IoQueueBase = extern struct {
     prp1: PrpEntry,
 
@@ -134,6 +144,7 @@ pub const IoQueueBase = extern struct {
     }
 };
 
+/// Host page size. Must be a power of two at or above 4 KiB.
 pub const PageSize = struct {
     bytes: u64,
 
@@ -161,6 +172,9 @@ pub const PageSize = struct {
     }
 };
 
+/// Caller-owned page of PRP entries. `wrap` enforces page alignment and the
+/// `pageSize / 8` capacity ceiling; entry slots are written by
+/// `DataPointers.fromContiguous`.
 pub const PrpList = struct {
     buffer: stdx.dma.Buffer(PrpEntry),
 
@@ -179,6 +193,9 @@ pub const PrpList = struct {
     }
 };
 
+/// Number of PRP-list entries a contiguous transfer requires beyond
+/// PRP1/PRP2. Returns 0 when PRP1 (and optionally inline PRP2) suffice;
+/// callers size their `PrpList` from the non-zero return.
 pub fn requiredListEntries(payload: stdx.dma.Buffer(u8), page_size: PageSize) Error!usize {
     const remaining_after_prp1 = try remainingAfterPrp1(payload, page_size);
     if (remaining_after_prp1 == 0) return 0;

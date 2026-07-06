@@ -10,8 +10,12 @@ const Window = Mmio.Window64;
 const Reg32 = Mmio.Register(u32);
 const Reg64 = Mmio.Register(u64);
 
+/// Byte offset of the first doorbell (`SQ0TDBL`) within the register block.
 pub const doorbell_base_offset: usize = 0x1000;
 
+/// Typed accessor over a caller-owned MMIO window. Loads and stores go
+/// through `stdx.io.Mmio.Register(T)` volatile lanes; construction only
+/// validates that the window is large enough for the fixed register block.
 pub const ControllerRegisters = struct {
     block: *volatile RegisterBlock,
     window: Window,
@@ -88,6 +92,9 @@ pub const ControllerRegisters = struct {
     }
 };
 
+/// Wire-order overlay of the fixed 0x1000-byte NVMe controller register
+/// block. Direct access is `volatile`; callers go through
+/// `ControllerRegisters` methods.
 pub const RegisterBlock = extern struct {
     cap: Reg64,
     vs: Reg32,
@@ -120,6 +127,7 @@ pub const RegisterBlock = extern struct {
     }
 };
 
+/// Controller Capabilities (`CAP`, 64-bit). Read-only wire lane.
 pub const Cap = packed struct(u64) {
     mqes: u16,
     cqr: u1,
@@ -147,6 +155,7 @@ pub const Cap = packed struct(u64) {
         return @bitCast(self);
     }
 
+    /// MQES is 0-based on the wire; return the 1-based entry count.
     pub fn maxQueueEntries(self: Cap) u32 {
         return @as(u32, self.mqes) + 1;
     }
@@ -155,16 +164,19 @@ pub const Cap = packed struct(u64) {
         return self.to;
     }
 
+    /// Doorbell stride in bytes: `4 << DSTRD`. Powers of two from 4 to 512.
     pub fn doorbellStrideBytes(self: Cap) usize {
         const shift: u6 = 2 + @as(u6, self.dstrd);
         return @as(usize, 1) << shift;
     }
 
+    /// Memory page size floor in bytes: `1 << (12 + MPSMIN)`.
     pub fn minPageSizeBytes(self: Cap) usize {
         const shift: u6 = 12 + @as(u6, self.mpsmin);
         return @as(usize, 1) << shift;
     }
 
+    /// Memory page size ceiling in bytes: `1 << (12 + MPSMAX)`.
     pub fn maxPageSizeBytes(self: Cap) usize {
         const shift: u6 = 12 + @as(u6, self.mpsmax);
         return @as(usize, 1) << shift;
@@ -181,6 +193,7 @@ pub const Cap = packed struct(u64) {
     }
 };
 
+/// Version (`VS`, 32-bit). Read-only wire lane.
 pub const Version = packed struct(u32) {
     tertiary: u8,
     minor: u8,
@@ -201,6 +214,8 @@ pub const Version = packed struct(u32) {
     }
 };
 
+/// Command Set Selection (`CC.CSS`). Non-exhaustive: reserved encodings pass
+/// through the wire lane unchanged.
 pub const CommandSetSelection = enum(u3) {
     nvm = 0,
     all_supported = 6,
@@ -208,6 +223,7 @@ pub const CommandSetSelection = enum(u3) {
     _,
 };
 
+/// Arbitration Mechanism Selected (`CC.AMS`). Non-exhaustive.
 pub const Arbitration = enum(u3) {
     round_robin = 0,
     weighted_round_robin_urgent = 1,
@@ -215,6 +231,7 @@ pub const Arbitration = enum(u3) {
     _,
 };
 
+/// Shutdown Notification (`CC.SHN`). Non-exhaustive.
 pub const ShutdownNotification = enum(u2) {
     none = 0,
     normal = 1,
@@ -222,6 +239,8 @@ pub const ShutdownNotification = enum(u2) {
     _,
 };
 
+/// Controller Configuration (`CC`, 32-bit). Read-write; every field defaults
+/// to a disabled controller ready for `nvmEnabled` bring-up.
 pub const Cc = packed struct(u32) {
     en: u1 = 0,
     reserved_1: u3 = 0,
@@ -272,6 +291,7 @@ pub const Cc = packed struct(u32) {
     }
 };
 
+/// Shutdown Status (`CSTS.SHST`). Non-exhaustive.
 pub const ShutdownStatus = enum(u2) {
     normal = 0,
     occurring = 1,
@@ -279,6 +299,7 @@ pub const ShutdownStatus = enum(u2) {
     _,
 };
 
+/// Controller Status (`CSTS`, 32-bit). Read-only wire lane.
 pub const Csts = packed struct(u32) {
     rdy: u1,
     cfs: u1,
@@ -311,6 +332,8 @@ pub const Csts = packed struct(u32) {
     }
 };
 
+/// Admin Queue Attributes (`AQA`, 32-bit). Both queue depths are 0-based on
+/// the wire; `fromDepths` accepts the 1-based entry count callers work in.
 pub const Aqa = packed struct(u32) {
     asqs: u12,
     reserved_12: u4 = 0,
@@ -351,6 +374,8 @@ pub const Aqa = packed struct(u32) {
     }
 };
 
+/// 64-bit queue base register (`ASQ` / `ACQ`). The controller requires
+/// 4 KiB alignment; the low 12 bits are always zero on the wire.
 pub const QueueBase = packed struct(u64) {
     reserved_0: u12 = 0,
     base: u52,

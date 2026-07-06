@@ -8,10 +8,12 @@ const Cid = ids.Cid;
 const DataPointers = @import("../core/prp.zig").DataPointers;
 const Nsid = ids.Nsid;
 
+/// Size of one SQE on the wire.
 pub const size_bytes: usize = 64;
 
 pub const Error = error{ ShortBuffer, Misaligned };
 
+/// Fused-operation phase for two-command atomic sequences (compare-and-write).
 pub const Fuse = enum(u2) {
     normal = 0b00,
     first = 0b01,
@@ -19,6 +21,8 @@ pub const Fuse = enum(u2) {
     _,
 };
 
+/// PRP-or-SGL Data Transfer selection. NVM Command Set on the first slice
+/// uses `.prps` exclusively.
 pub const Psdt = enum(u2) {
     prps = 0b00,
     sgl_mptr_addr = 0b01,
@@ -26,6 +30,7 @@ pub const Psdt = enum(u2) {
     _,
 };
 
+/// Command Dword 0: opcode, fuse phase, transfer type, and command id.
 pub const Cdw0 = packed struct(u32) {
     opcode: u8,
     fuse: Fuse = .normal,
@@ -48,6 +53,9 @@ pub const Cdw0 = packed struct(u32) {
     }
 };
 
+/// 64-byte NVMe Submission Queue Entry. Underscore-prefixed storage fields
+/// carry wire bytes; typed accessors decode. Callers author in place via
+/// `Sqe.init(target, params)`; readers borrow through `Sqe.validate(bytes)`.
 pub const Sqe = extern struct {
     _cdw0: u32 = 0,
     _nsid: u32 = 0,

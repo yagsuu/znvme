@@ -2,6 +2,7 @@
 
 const std = @import("std");
 
+/// Size of the Identify Controller payload (CNS 01h) on the wire.
 pub const size_bytes: usize = 4096;
 
 pub const Error = error{
@@ -10,6 +11,7 @@ pub const Error = error{
     MaxDataTransferSizeTooLarge,
 };
 
+/// Controller Type (`CNTRLTYPE`). Non-exhaustive per NVMe 2.0.
 pub const ControllerType = enum(u8) {
     reserved = 0x00,
     io = 0x01,
@@ -18,6 +20,9 @@ pub const ControllerType = enum(u8) {
     _,
 };
 
+/// Decoded `MDTS` (Maximum Data Transfer Size). `unlimited` when the wire
+/// field is zero; otherwise `page_shift` is the exponent applied to the
+/// controller's `MPSMIN` page size.
 pub const MaxDataTransferSize = union(enum) {
     unlimited,
     page_shift: u8,
@@ -27,6 +32,8 @@ pub const MaxDataTransferSize = union(enum) {
         return .{ .page_shift = mdts };
     }
 
+    /// Absolute byte ceiling on one transfer, or `null` for unlimited.
+    /// Multiplies `min_page_size_bytes` (from `CAP.MPSMIN`) by `1 << page_shift`.
     pub fn maxBytes(self: MaxDataTransferSize, min_page_size_bytes: usize) Error!?usize {
         return switch (self) {
             .unlimited => null,
@@ -39,6 +46,8 @@ pub const MaxDataTransferSize = union(enum) {
     }
 };
 
+/// SQE/CQE size register (`SQES` / `CQES`): required and max entry size,
+/// each as a power-of-two byte-count shift.
 pub const EntrySize = packed struct(u8) {
     required_shift: u4,
     max_shift: u4,
@@ -57,6 +66,8 @@ pub const EntrySize = packed struct(u8) {
     }
 };
 
+/// Optional Admin Command Support (`OACS`). One flag per optional admin
+/// feature; the controller sets a bit iff the command is supported.
 pub const OacsBits = packed struct(u16) {
     security_send_receive: u1,
     format_nvm: u1,
@@ -77,6 +88,7 @@ pub const OacsBits = packed struct(u16) {
     }
 };
 
+/// Optional NVM Command Support (`ONCS`). One flag per optional NVM command.
 pub const OncsBits = packed struct(u16) {
     compare: u1,
     write_uncorrectable: u1,
@@ -95,6 +107,7 @@ pub const OncsBits = packed struct(u16) {
     }
 };
 
+/// Fused-Operation Support (`FUSES`). Currently only compare-and-write.
 pub const FusesBits = packed struct(u16) {
     compare_and_write: u1,
     reserved_1: u15 = 0,
@@ -105,6 +118,8 @@ pub const FusesBits = packed struct(u16) {
     }
 };
 
+/// SGL support summary (`SGLS`). The full bit layout is deferred; the first
+/// slice only needs "does the controller advertise SGLs at all?".
 pub const SglSupportBits = struct {
     raw: u32,
 
@@ -117,6 +132,10 @@ pub const SglSupportBits = struct {
     }
 };
 
+/// 4096-byte Identify Controller (CNS 01h) response. Underscore-prefixed
+/// storage fields carry wire bytes; typed accessors decode. Fabricate for
+/// tests via `IdentifyController.init(target, params)`; production readers
+/// borrow through `IdentifyController.validate(bytes)`.
 pub const IdentifyController = extern struct {
     _vid: u16 = 0,
     _ssvid: u16 = 0,

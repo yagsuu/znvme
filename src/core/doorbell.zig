@@ -19,6 +19,7 @@ const Kind = enum(u1) {
     completion_head = 1,
 };
 
+/// Doorbell stride in bytes, derived from `CAP.DSTRD`.
 pub const Stride = struct {
     bytes: usize,
 
@@ -31,6 +32,8 @@ pub const Stride = struct {
     }
 };
 
+/// Wire-encoded doorbell store: 16-bit index in the low half, upper half
+/// reserved and always zero.
 pub const Value = packed struct(u32) {
     index: u16,
     reserved_16: u16 = 0,
@@ -50,6 +53,8 @@ pub const Value = packed struct(u32) {
     }
 };
 
+/// Root doorbell accessor: composes an MMIO window with the CAP-derived
+/// stride and mints per-queue doorbell handles.
 pub const Doorbells = struct {
     window: Window,
     stride: Stride,
@@ -73,6 +78,8 @@ pub const Doorbells = struct {
     }
 };
 
+/// Per-SQ tail doorbell. `setTail` emits `stdx.barrier.mmio.release` before
+/// the store so prior SQE writes are ordered ahead of the doorbell ring.
 pub const SubmissionQueueDoorbell = struct {
     window: Window,
     stride: Stride,
@@ -95,6 +102,9 @@ pub const SubmissionQueueDoorbell = struct {
     }
 };
 
+/// Per-CQ head doorbell. `setHead` emits no barrier — the paired
+/// `stdx.barrier.dma.acquire` in the completion drain already orders CQE
+/// reads, and the head store only acknowledges consumption.
 pub const CompletionQueueDoorbell = struct {
     window: Window,
     stride: Stride,

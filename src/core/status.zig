@@ -2,11 +2,17 @@
 
 const std = @import("std");
 
+/// Decoded 16-bit CQE status field. Wraps the packed `Bits` so cross-field
+/// predicates (`isSuccess`, `kind`, `failure`) can hide reserved `CodeType`
+/// values behind non-exhaustive tags.
 pub const CompletionStatus = struct {
     bits: Bits,
 
     pub const Raw = u16;
 
+    /// Wire-order status bits: phase, code, code type, retry delay hint,
+    /// more/DNR flags. Callers read through methods; direct field access is
+    /// legal for tests and diagnostic paths.
     pub const Bits = packed struct(u16) {
         phase: u1,
         code: u8,
@@ -16,6 +22,8 @@ pub const CompletionStatus = struct {
         do_not_retry: u1,
     };
 
+    /// Status Code Type (SCT). Non-exhaustive: values `0x4..0x6` are reserved
+    /// by the spec and surface through `Kind.reserved_code_type`.
     pub const CodeType = enum(u3) {
         generic = 0x0,
         command_specific = 0x1,
@@ -25,6 +33,8 @@ pub const CompletionStatus = struct {
         _,
     };
 
+    /// Command Retry Delay hint (CRDT). `.none` when the field is zero;
+    /// `crdt1..crdt3` select one of three admin-configured intervals.
     pub const RetryDelay = enum(u2) {
         none = 0,
         crdt1 = 1,
@@ -32,6 +42,8 @@ pub const CompletionStatus = struct {
         crdt3 = 3,
     };
 
+    /// Generic Status Codes (SCT=0). Non-exhaustive: unknown codes surface as
+    /// their raw `u8` through `Kind.generic`.
     pub const GenericCode = enum(u8) {
         success = 0x00,
         invalid_command_opcode = 0x01,
@@ -56,6 +68,8 @@ pub const CompletionStatus = struct {
         _,
     };
 
+    /// Discriminated status taxonomy. Groups reserved SCT values under one
+    /// tag and preserves the raw code byte for command-specific SCTs.
     pub const Kind = union(enum) {
         success,
         generic: GenericCode,
@@ -66,6 +80,7 @@ pub const CompletionStatus = struct {
         reserved_code_type: u3,
     };
 
+    /// Non-success completion snapshot: taxonomy plus the retry/DNR/more bits.
     pub const Failure = struct {
         kind: Kind,
         retry_delay: RetryDelay,
@@ -73,6 +88,7 @@ pub const CompletionStatus = struct {
         do_not_retry: bool,
     };
 
+    /// `phase` is required; every other field defaults to the "success" side.
     pub const Init = struct {
         phase: bool,
         code_type: CodeType = .generic,
@@ -82,9 +98,7 @@ pub const CompletionStatus = struct {
         do_not_retry: bool = false,
     };
 
-    /// Compose a `CompletionStatus` from semantic fields. `phase` is required; every other
-    /// `Init` field defaults to the "success" side, so `init(.{ .phase = true })` yields a
-    /// phase-1 generic-success value.
+    /// Compose from semantic fields.
     pub fn init(params: Init) CompletionStatus {
         return .{ .bits = .{
             .phase = @intFromBool(params.phase),
@@ -96,13 +110,12 @@ pub const CompletionStatus = struct {
         } };
     }
 
-    /// Shortcut for the common "posted successful admin completion" fixture:
-    /// `CompletionStatus.init(.{ .phase = phase_bit })`.
+    /// Phase-only sugar: `init(.{ .phase = phase_bit })`.
     pub fn success(phase_bit: bool) CompletionStatus {
         return init(.{ .phase = phase_bit });
     }
 
-    /// Shortcut for a generic-status failure with a chosen `GenericCode`.
+    /// Generic-status failure with a chosen `GenericCode`.
     pub fn genericFailure(phase_bit: bool, generic_code: GenericCode) CompletionStatus {
         return init(.{
             .phase = phase_bit,
@@ -143,13 +156,8 @@ pub const CompletionStatus = struct {
         return self.bits.do_not_retry != 0;
     }
 
-    /// True iff the status field decodes to a generic-success completion:
-    /// `codeType == .generic` and `code == GenericCode.success`. This is a
-    /// pure status-field decoder and never consults the phase bit. Callers
-    /// reading a CQ slot directly must verify phase separately through
-    /// `Cqe.phase()` or `Cqe.isPostedSuccess(expected_phase)`;
-    /// callers using a `queue.Completion` returned from `pollOne` have
-    /// already had phase verified and use `Completion.statusIsSuccess()`.
+    /// True iff SCT=0 and code=success. Phase-agnostic — callers reading a CQ
+    /// slot directly must verify phase separately (`Cqe.phase()`).
     pub fn isSuccess(self: CompletionStatus) bool {
         return self.codeType() == .generic and self.code() == @intFromEnum(GenericCode.success);
     }
