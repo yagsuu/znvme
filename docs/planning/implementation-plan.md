@@ -154,7 +154,7 @@ Phase-D gate: `zig build test`.
 ## Progress ledger
 
 - [x] Phase A — 5/5 slices landed. Gate passed: 83/83 tests, `zig build check` clean. Facade + roots + `test/all.zig` seeded. `build.zig` gained a `stdx` import on the tests module (test-strategy §"stdx composition") and an `audit_options` step exposing `src/identify/controller.zig` bytes to the A5 barrier-audit test. Golden fixture `test/fixtures/identify/controller_minimal.bin` (4096 bytes, md5 `3e15ae262d5f150d5fc65ffb93ae8b32`) plus `_regen.zig` landed.
-- [ ] Phase B — 0/4 slices landed.
+- [x] Phase B — 4/4 slices landed. Gate passed: 198/198 tests, `zig build check` clean, `zig fmt --check` silent. Aggregators updated (`src/core/root.zig`, `src/commands/root.zig`, `src/identify/root.zig`, `test/all.zig`). Six golden fixtures landed: `test/fixtures/commands/{sqe_identify_controller,cqe_success}.bin` and `test/fixtures/identify/{namespace_512e_minimal,namespace_4kn_minimal,list_two_active,list_dense_1024}.bin`. Reviewer pass identified four findings; three landed (module-level `max_list_entries` removed, decorative banners deleted, unused `Cid`/`Nsid` aliases dropped), one deferred (spec-inconsistency around `numberOfLbaFormats` behavior when device sends NLBAF > 63 — spec Approved API snippet doesn't compile as written; behavior on out-of-domain values needs an ADR).
 - [ ] Phase C — 0/1 slices landed.
 - [ ] Phase D — 0/3 slices landed.
 - [ ] Phase E — 0/2 slices landed.
