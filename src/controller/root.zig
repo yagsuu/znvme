@@ -1,3 +1,3 @@
 //! `controller` domain aggregator. Spec: docs/specs/architecture.md.
 
-comptime {}
+pub const queue = @import("queue.zig");
