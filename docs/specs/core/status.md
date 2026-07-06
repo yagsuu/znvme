@@ -178,9 +178,6 @@ pub const CompletionStatus = struct {
         do_not_retry: bool,
     };
 
-    /// Semantic construction inputs. `phase` is required; every other field
-    /// defaults to the "success" side so `CompletionStatus.init(.{ .phase = true })`
-    /// yields a phase-1 generic-success value.
     pub const Init = struct {
         phase: bool,
         code_type: CodeType = .generic,
@@ -190,7 +187,9 @@ pub const CompletionStatus = struct {
         do_not_retry: bool = false,
     };
 
-    /// Compose a `CompletionStatus` from semantic fields.
+    /// Compose a `CompletionStatus` from semantic fields. `phase` is required; every other
+    /// `Init` field defaults to the "success" side, so `init(.{ .phase = true })` yields a
+    /// phase-1 generic-success value.
     pub fn init(params: Init) CompletionStatus {
         return .{ .bits = .{
             .phase = @intFromBool(params.phase),
@@ -203,17 +202,17 @@ pub const CompletionStatus = struct {
     }
 
     /// Shortcut for the common "posted successful admin completion" fixture:
-    /// `CompletionStatus.init(.{ .phase = phase })`.
-    pub fn success(phase: bool) CompletionStatus {
-        return init(.{ .phase = phase });
+    /// `CompletionStatus.init(.{ .phase = phase_bit })`.
+    pub fn success(phase_bit: bool) CompletionStatus {
+        return init(.{ .phase = phase_bit });
     }
 
     /// Shortcut for a generic-status failure with a chosen `GenericCode`.
-    pub fn genericFailure(phase: bool, code: GenericCode) CompletionStatus {
+    pub fn genericFailure(phase_bit: bool, generic_code: GenericCode) CompletionStatus {
         return init(.{
-            .phase = phase,
+            .phase = phase_bit,
             .code_type = .generic,
-            .code = @intFromEnum(code),
+            .code = @intFromEnum(generic_code),
         });
     }
 

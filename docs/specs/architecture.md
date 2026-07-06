@@ -139,7 +139,7 @@ controller
   -> core, commands
 
 commands
-  -> core
+  -> core, controller/queue
 
 identify
   -> core
@@ -151,9 +151,9 @@ core
 Hard rules: `[znvme]`
 
 - `core` imports only `std`, `builtin`, and `stdx`. `[znvme]`
-- Sibling domains import only through `core`. `[znvme]`
+- Sibling domains import only through `core`, except where the layering diagram above names a direct edge and the importing spec names the dependency (currently: `commands` -> `controller/queue`). `[znvme]`
 - `controller` must not import from `identify`. `[znvme]`
-- `commands` must not import from `controller`. `[znvme]`
+- `commands` may import `controller/queue.zig` but must not import `controller/init.zig` or any other `controller/*` module. `[znvme]`
 - `nvme.zig` contains no logic beyond re-exporting and aliasing. `[znvme]`
 - Implementation modules within a domain import each other directly only when the owning spec allows the dependency. `[znvme]`
 - A cross-domain import requires the importing spec to name the dependency and the graph to remain acyclic. `[znvme]`

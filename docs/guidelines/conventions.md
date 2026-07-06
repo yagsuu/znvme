@@ -64,6 +64,15 @@ Named bit ranges inside a wire flag word use Zig `packed struct(uN)` with backin
 
 `zig build check` type-checks the `nvme` module for `x86_64-freestanding`, proving these assertions on a non-host target on every build. Host tests assert behavior, never layout.
 
+### Bit-packed lane types
+
+A wire lane packed into a `uN` picks one of two shapes based on the semantics of its decoded value:
+
+- **Direct.** `pub const T = packed struct(uN) { ... };`. Callers read and write fields directly and use `.raw()` / `T.fromRaw(v)` at the wire boundary. This is the default and covers every bit-lane type whose decoded value is field-for-field: no cross-field predicate, no reserved-value hiding, no derived taxonomy. Landed examples: `Cap`, `Cc`, `Csts`, `Aqa`, `QueueBase`, `Version`, `EntrySize`, `OacsBits`, `OncsBits`, `FusesBits`.
+- **Semantic wrapper.** `pub const T = struct { bits: Bits, ... }; pub const Bits = packed struct(uN) { ... };`. Callers construct through `T.init(Init)` / `T.from(Raw)` and read only through methods; the `Bits` field is not touched at call sites. Reserved for lanes whose decoded value requires cross-field logic — non-exhaustive enum tags hidden behind an accessor, predicates that combine multiple fields, or a taxonomy (`Kind`, `Failure`) built on top of the raw bits. Landed example: `CompletionStatus`, whose reserved `CodeType` values, phase-agnostic `isSuccess`, and `Kind`/`Failure` composition would leak to every read site under the direct shape.
+
+Both shapes obey the wire-boundary `comptime` assertions above; the wrapper additionally asserts `@sizeOf(T) == @sizeOf(uN)` and `@alignOf(T) == @alignOf(uN)`. A new lane type defaults to direct; the wrapper shape requires the owning spec to name at least one cross-field or reserved-value semantic that justifies the extra layer.
+
 ## Endianness
 
 NVMe is little-endian on the wire, and the first slice targets little-endian `x86_64-freestanding-none` only. Wire readers and writers may assume native little-endian; big-endian compatibility is deferred in `docs/specs/project/scope.md`. Multi-byte wire fields still use `align(1)` typed fields, `stdx.layout.Le(uN)`, or explicit little-endian read/write when that makes byte order visible at the declaration boundary. Raw host layout is never treated as a wire contract unless the type carries the layout assertions above.
