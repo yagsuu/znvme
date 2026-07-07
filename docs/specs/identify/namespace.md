@@ -188,7 +188,7 @@ Status: Approved.
 
 `[znvme]` Callers whose storage is already typed call the accessors directly on the typed pointer.
 
-`[znvme]` `numberOfLbaFormats()` returns `NLBAF + 1` as a `u7` (max 64).
+`[znvme]` `numberOfLbaFormats()` returns `(NLBAF & 0x3F) + 1` as a `u7` (max 64). NVMe 2.0 caps `NLBAF` at 63 (`u6`); the low-6-bit mask makes the accessor total and infallible for any device-authored `_nlbaf: u8` byte pattern, without panicking on out-of-domain values a nonconforming device might emit.
 
 `[znvme]` `formatIndex()` returns a `u6` assembled from FLBAS bits `6:5` + `3:0`.
 
@@ -524,7 +524,7 @@ pub const IdentifyNamespace = extern struct {
     }
 
     pub fn numberOfLbaFormats(self: *const IdentifyNamespace) u7 {
-        return @as(u7, self._nlbaf) + 1;
+        return @as(u7, @intCast(self._nlbaf & 0x3F)) + 1;
     }
 
     pub fn formatIndex(self: *const IdentifyNamespace) u6 {
