@@ -3,9 +3,10 @@
 const std = @import("std");
 
 const ids = @import("../core/ids.zig");
+const prp = @import("../core/prp.zig");
 const queue = @import("../controller/queue.zig");
 
-const DataPointers = @import("../core/prp.zig").DataPointers;
+const DataPointers = prp.DataPointers;
 const Nsid = ids.Nsid;
 const Sqe = @import("sqe.zig").Sqe;
 

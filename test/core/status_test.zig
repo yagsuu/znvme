@@ -3,8 +3,8 @@
 const std = @import("std");
 const testing = std.testing;
 const nvme = @import("nvme");
-const status_mod = nvme.core.status;
-const CompletionStatus = status_mod.CompletionStatus;
+const status = nvme.core.status;
+const CompletionStatus = status.CompletionStatus;
 
 test "unit: status decodes success with phase one" {
     const cs = CompletionStatus.from(0x0001);

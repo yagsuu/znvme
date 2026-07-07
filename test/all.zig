@@ -9,8 +9,8 @@ comptime {
     _ = @import("core/prp_test.zig");
     _ = @import("commands/sqe_test.zig");
     _ = @import("commands/cqe_test.zig");
-    _ = @import("commands/nvm_test.zig");
     _ = @import("commands/admin_test.zig");
+    _ = @import("commands/nvm_test.zig");
     _ = @import("controller/queue_test.zig");
     _ = @import("controller/init_test.zig");
     _ = @import("identify/controller_test.zig");

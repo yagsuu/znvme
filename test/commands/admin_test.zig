@@ -1,26 +1,26 @@
 //! Tests for src/commands/admin.zig. Spec: docs/specs/commands/admin.md.
 
 const std = @import("std");
-const testing = std.testing;
 
 const stdx = @import("stdx");
 
 const nvme = @import("nvme");
+
+const Cid = nvme.core.ids.Cid;
+const CidAllocator = nvme.controller.queue.CidAllocator;
+const DataPointers = nvme.core.prp.DataPointers;
+const IoQueueBase = nvme.core.prp.IoQueueBase;
+const Nsid = nvme.core.ids.Nsid;
+const Qid = nvme.core.ids.Qid;
+const Sqe = nvme.commands.sqe.Sqe;
+
 const admin = nvme.commands.admin;
-const queue = nvme.controller.queue;
 const doorbell = nvme.core.doorbell;
 const ids = nvme.core.ids;
-const registers = nvme.core.registers;
 const prp = nvme.core.prp;
-const sqe_mod = nvme.commands.sqe;
-
-const Sqe = sqe_mod.Sqe;
-const Cid = ids.Cid;
-const Nsid = ids.Nsid;
-const Qid = ids.Qid;
-const DataPointers = prp.DataPointers;
-const IoQueueBase = prp.IoQueueBase;
-const CidAllocator = queue.CidAllocator;
+const queue = nvme.controller.queue;
+const registers = nvme.core.registers;
+const testing = std.testing;
 
 // SubmissionQueue substrate mirroring test/controller/queue_test.zig and
 // test/commands/nvm_test.zig: caller-owned depth-8 ring, a CID bitmap wide

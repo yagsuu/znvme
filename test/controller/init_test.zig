@@ -1,29 +1,30 @@
 //! Tests for src/controller/init.zig. Spec: docs/specs/controller/init.md.
 
 const std = @import("std");
-const testing = std.testing;
 
 const stdx = @import("stdx");
 
 const nvme = @import("nvme");
-const ctrl_init = nvme.controller.init;
-const queue = nvme.controller.queue;
+
+const Aqa = nvme.core.registers.Aqa;
+const Cap = nvme.core.registers.Cap;
+const Cc = nvme.core.registers.Cc;
+const CidAllocator = nvme.controller.queue.CidAllocator;
+const Cqe = nvme.commands.cqe.Cqe;
+const Csts = nvme.core.registers.Csts;
+const DmaAddr = stdx.addr.DmaAddr;
+const QueueBase = nvme.core.registers.QueueBase;
+const ShutdownNotification = nvme.core.registers.ShutdownNotification;
+const ShutdownStatus = nvme.core.registers.ShutdownStatus;
+const Sqe = nvme.commands.sqe.Sqe;
+
+const init = nvme.controller.init;
 const doorbell = nvme.core.doorbell;
-const registers = nvme.core.registers;
 const ids = nvme.core.ids;
 const prp = nvme.core.prp;
-
-const Sqe = nvme.commands.sqe.Sqe;
-const Cqe = nvme.commands.cqe.Cqe;
-const Cap = registers.Cap;
-const Cc = registers.Cc;
-const Csts = registers.Csts;
-const Aqa = registers.Aqa;
-const QueueBase = registers.QueueBase;
-const ShutdownNotification = registers.ShutdownNotification;
-const ShutdownStatus = registers.ShutdownStatus;
-const CidAllocator = queue.CidAllocator;
-const DmaAddr = stdx.addr.DmaAddr;
+const queue = nvme.controller.queue;
+const registers = nvme.core.registers;
+const testing = std.testing;
 
 /// Register-block offsets (see src/core/registers.zig comptime asserts).
 const OFF_CC: usize = 0x0014;
@@ -56,7 +57,7 @@ const CounterBackend = struct {
     }
 };
 
-const Controller = ctrl_init.Controller(CounterBackend);
+const Controller = init.Controller(CounterBackend);
 
 /// Spin-only backoff. Any non-payload iteration hits the sleep step which
 /// then observes `remaining_ns <= 0` and returns `.timeout` — so tests that
@@ -414,7 +415,7 @@ test "unit: controller reset clears CC.EN when set and polls CSTS.RDY to zero" {
     const deadline = try stdx.time.Deadline.now(&ctrl.clock, try stdx.time.Duration.fromMillis(100));
     try ctrl.reset(deadline, &backoff);
 
-    try testing.expectEqual(ctrl_init.State.disabled, ctrl.state);
+    try testing.expectEqual(init.State.disabled, ctrl.state);
     try testing.expectEqual(@as(u32, Cc.disabled().raw()), sub.readCcRaw());
     try testing.expect(!ctrl.admin.ready());
 }
@@ -433,7 +434,7 @@ test "unit: controller reset is idempotent on double-call when CC.EN already cle
     try ctrl.reset(deadline, &backoff);
     try ctrl.reset(deadline, &backoff); // second call must not fail.
 
-    try testing.expectEqual(ctrl_init.State.disabled, ctrl.state);
+    try testing.expectEqual(init.State.disabled, ctrl.state);
 }
 
 test "unit: controller reset is idempotent with no CC write when CC.EN is already clear" {
@@ -454,7 +455,7 @@ test "unit: controller reset is idempotent with no CC write when CC.EN is alread
     try ctrl.reset(deadline, &backoff);
 
     try testing.expectEqual(sentinel, sub.readCcRaw());
-    try testing.expectEqual(ctrl_init.State.disabled, ctrl.state);
+    try testing.expectEqual(init.State.disabled, ctrl.state);
 }
 
 test "unit: controller reset clears CC.EN and polls CSTS.RDY to zero and transitions admin.ready() false" {
@@ -483,7 +484,7 @@ test "unit: controller reset clears CC.EN and polls CSTS.RDY to zero and transit
     try ctrl.reset(reset_deadline, &backoff);
 
     try testing.expectEqual(@as(u32, Cc.disabled().raw()), sub.readCcRaw());
-    try testing.expectEqual(ctrl_init.State.disabled, ctrl.state);
+    try testing.expectEqual(init.State.disabled, ctrl.state);
     try testing.expect(!ctrl.admin.ready());
 }
 
@@ -591,7 +592,7 @@ test "unit: controller enable returns ControllerFatal when CSTS.CFS sets during 
     backoff = makeBackoff();
     const enable_deadline = try stdx.time.Deadline.now(&ctrl.clock, try stdx.time.Duration.fromMillis(100));
     try testing.expectError(error.ControllerFatal, ctrl.enable(enable_deadline, &backoff));
-    try testing.expectEqual(ctrl_init.State.fatal, ctrl.state);
+    try testing.expectEqual(init.State.fatal, ctrl.state);
 }
 
 test "unit: controller admin ready returns false before enable and true after enable success" {
@@ -670,7 +671,7 @@ test "unit: controller shutdown normal sets CC.SHN to 01b and polls SHST to comp
 
     const observed_cc = Cc.fromRaw(sub.readCcRaw());
     try testing.expectEqual(ShutdownNotification.normal, observed_cc.shn);
-    try testing.expectEqual(ctrl_init.State.shutdown_complete, ctrl.state);
+    try testing.expectEqual(init.State.shutdown_complete, ctrl.state);
 }
 
 test "unit: controller shutdown abrupt sets CC.SHN to 10b and polls SHST to complete" {
@@ -689,7 +690,7 @@ test "unit: controller shutdown abrupt sets CC.SHN to 10b and polls SHST to comp
 
     const observed_cc = Cc.fromRaw(sub.readCcRaw());
     try testing.expectEqual(ShutdownNotification.abrupt, observed_cc.shn);
-    try testing.expectEqual(ctrl_init.State.shutdown_complete, ctrl.state);
+    try testing.expectEqual(init.State.shutdown_complete, ctrl.state);
 }
 
 test "unit: controller shutdown returns NotReady when state is not ready" {
@@ -743,7 +744,7 @@ test "unit: controller shutdown preserves admin.ready() true for final completio
     const deadline = try stdx.time.Deadline.now(&ctrl.clock, try stdx.time.Duration.fromMillis(100));
     try ctrl.shutdown(.normal, deadline, &backoff);
 
-    try testing.expectEqual(ctrl_init.State.shutdown_complete, ctrl.state);
+    try testing.expectEqual(init.State.shutdown_complete, ctrl.state);
     try testing.expect(ctrl.admin.ready());
     // And the pair is still usable through the accessors post-shutdown.
     try testing.expectEqual(ids.Qid.admin, ctrl.admin.sq().qid);
@@ -789,21 +790,21 @@ test "roundtrip: controller reset then enable then reset transitions through dis
     var backoff = makeBackoff();
     const d1 = try stdx.time.Deadline.now(&ctrl.clock, try stdx.time.Duration.fromMillis(100));
     try ctrl.reset(d1, &backoff);
-    try testing.expectEqual(ctrl_init.State.disabled, ctrl.state);
+    try testing.expectEqual(init.State.disabled, ctrl.state);
     try testing.expect(!ctrl.admin.ready());
 
     backoff = makeBackoff();
     sub.setCsts(.{ .rdy = 1, .cfs = 0, .shst = .normal, .nssro = 0, .pp = 0, .st = 0 });
     const d2 = try stdx.time.Deadline.now(&ctrl.clock, try stdx.time.Duration.fromMillis(100));
     try ctrl.enable(d2, &backoff);
-    try testing.expectEqual(ctrl_init.State.ready, ctrl.state);
+    try testing.expectEqual(init.State.ready, ctrl.state);
     try testing.expect(ctrl.admin.ready());
 
     backoff = makeBackoff();
     sub.setCsts(.{ .rdy = 0, .cfs = 0, .shst = .normal, .nssro = 0, .pp = 0, .st = 0 });
     const d3 = try stdx.time.Deadline.now(&ctrl.clock, try stdx.time.Duration.fromMillis(100));
     try ctrl.reset(d3, &backoff);
-    try testing.expectEqual(ctrl_init.State.disabled, ctrl.state);
+    try testing.expectEqual(init.State.disabled, ctrl.state);
     try testing.expect(!ctrl.admin.ready());
 }
 
@@ -818,18 +819,18 @@ test "roundtrip: controller reset then enable then shutdown normal transitions t
     var backoff = makeBackoff();
     const d1 = try stdx.time.Deadline.now(&ctrl.clock, try stdx.time.Duration.fromMillis(100));
     try ctrl.reset(d1, &backoff);
-    try testing.expectEqual(ctrl_init.State.disabled, ctrl.state);
+    try testing.expectEqual(init.State.disabled, ctrl.state);
 
     backoff = makeBackoff();
     sub.setCsts(.{ .rdy = 1, .cfs = 0, .shst = .normal, .nssro = 0, .pp = 0, .st = 0 });
     const d2 = try stdx.time.Deadline.now(&ctrl.clock, try stdx.time.Duration.fromMillis(100));
     try ctrl.enable(d2, &backoff);
-    try testing.expectEqual(ctrl_init.State.ready, ctrl.state);
+    try testing.expectEqual(init.State.ready, ctrl.state);
 
     backoff = makeBackoff();
     sub.setCsts(.{ .rdy = 1, .cfs = 0, .shst = .complete, .nssro = 0, .pp = 0, .st = 0 });
     const d3 = try stdx.time.Deadline.now(&ctrl.clock, try stdx.time.Duration.fromMillis(100));
     try ctrl.shutdown(.normal, d3, &backoff);
-    try testing.expectEqual(ctrl_init.State.shutdown_complete, ctrl.state);
+    try testing.expectEqual(init.State.shutdown_complete, ctrl.state);
     try testing.expect(ctrl.admin.ready());
 }

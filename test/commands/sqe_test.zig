@@ -6,15 +6,15 @@ const testing = std.testing;
 const stdx = @import("stdx");
 
 const nvme = @import("nvme");
-const sqe_mod = nvme.commands.sqe;
+const sqe = nvme.commands.sqe;
 const prp = nvme.core.prp;
 const ids = nvme.core.ids;
 const regen = @import("../fixtures/commands/sqe_identify_controller_regen.zig");
 
-const Sqe = sqe_mod.Sqe;
-const Cdw0 = sqe_mod.Cdw0;
-const Fuse = sqe_mod.Fuse;
-const Psdt = sqe_mod.Psdt;
+const Sqe = sqe.Sqe;
+const Cdw0 = sqe.Cdw0;
+const Fuse = sqe.Fuse;
+const Psdt = sqe.Psdt;
 const DataPointers = prp.DataPointers;
 const PrpEntry = prp.PrpEntry;
 
@@ -36,7 +36,7 @@ test "unit: sqe extern layout matches NVMe common command format offsets" {
 
 test "unit: sqe size is 64 bytes and alignment is 8" {
     try testing.expectEqual(@as(usize, 64), @sizeOf(Sqe));
-    try testing.expectEqual(sqe_mod.size_bytes, @sizeOf(Sqe));
+    try testing.expectEqual(sqe.size_bytes, @sizeOf(Sqe));
     try testing.expectEqual(@as(usize, 8), @alignOf(Sqe));
 }
 
@@ -462,12 +462,12 @@ test "golden: sqe identify controller minimal bytes" {
     // compare byte-for-byte against the on-disk fixture.
     const composed = regen.compose();
     const embedded = @embedFile("../fixtures/commands/sqe_identify_controller.bin");
-    try testing.expectEqual(@as(usize, sqe_mod.size_bytes), embedded.len);
+    try testing.expectEqual(@as(usize, sqe.size_bytes), embedded.len);
     try testing.expectEqualSlices(u8, embedded, &composed);
 
     // Validate the golden bytes as an emulator seam would; copy into an
     // aligned buffer since `@embedFile` yields byte-aligned storage.
-    var golden: [sqe_mod.size_bytes]u8 align(@alignOf(Sqe)) = undefined;
+    var golden: [sqe.size_bytes]u8 align(@alignOf(Sqe)) = undefined;
     @memcpy(&golden, embedded);
     const view = try Sqe.validate(&golden);
 

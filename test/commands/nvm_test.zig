@@ -1,25 +1,25 @@
 //! Tests for src/commands/nvm.zig. Spec: docs/specs/commands/nvm.md.
 
 const std = @import("std");
-const testing = std.testing;
 
 const stdx = @import("stdx");
 
 const nvme = @import("nvme");
-const nvm = nvme.commands.nvm;
-const queue = nvme.controller.queue;
+
+const Cid = nvme.core.ids.Cid;
+const CidAllocator = nvme.controller.queue.CidAllocator;
+const DataPointers = nvme.core.prp.DataPointers;
+const Nsid = nvme.core.ids.Nsid;
+const Qid = nvme.core.ids.Qid;
+const Sqe = nvme.commands.sqe.Sqe;
+
 const doorbell = nvme.core.doorbell;
 const ids = nvme.core.ids;
-const registers = nvme.core.registers;
+const nvm = nvme.commands.nvm;
 const prp = nvme.core.prp;
-const sqe_mod = nvme.commands.sqe;
-
-const Sqe = sqe_mod.Sqe;
-const Cid = ids.Cid;
-const Nsid = ids.Nsid;
-const Qid = ids.Qid;
-const DataPointers = prp.DataPointers;
-const CidAllocator = queue.CidAllocator;
+const queue = nvme.controller.queue;
+const registers = nvme.core.registers;
+const testing = std.testing;
 
 // SubmissionQueue substrate identical to test/controller/queue_test.zig: a
 // depth-8 caller-owned ring, a CID bitmap wide enough for that depth, and a

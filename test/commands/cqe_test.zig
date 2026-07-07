@@ -4,10 +4,10 @@ const std = @import("std");
 const testing = std.testing;
 
 const nvme = @import("nvme");
-const cqe_mod = nvme.commands.cqe;
+const cqe = nvme.commands.cqe;
 const regen = @import("../fixtures/commands/cqe_success_regen.zig");
 
-const Cqe = cqe_mod.Cqe;
+const Cqe = cqe.Cqe;
 const Cid = nvme.core.ids.Cid;
 const Qid = nvme.core.ids.Qid;
 const CompletionStatus = nvme.core.status.CompletionStatus;
@@ -28,7 +28,7 @@ test "unit: cqe size is 16 bytes and alignment is 4" {
     // The NVMe CQE is exactly 16 bytes with 4-byte alignment to match the
     // wire format required by controller DMA.
     try testing.expectEqual(@as(usize, 16), @sizeOf(Cqe));
-    try testing.expectEqual(@as(usize, 16), cqe_mod.size_bytes);
+    try testing.expectEqual(@as(usize, 16), cqe.size_bytes);
     try testing.expectEqual(@as(usize, 4), @alignOf(Cqe));
 }
 
@@ -295,7 +295,7 @@ test "golden: cqe success completion minimal bytes" {
     const composed = std.mem.asBytes(&scratch);
 
     const embedded = @embedFile("../fixtures/commands/cqe_success.bin");
-    try testing.expectEqual(@as(usize, cqe_mod.size_bytes), embedded.len);
+    try testing.expectEqual(@as(usize, cqe.size_bytes), embedded.len);
     try testing.expectEqualSlices(u8, embedded, composed);
 
     // Re-view the composed bytes through the Cqe type and confirm one

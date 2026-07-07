@@ -3,11 +3,12 @@
 const std = @import("std");
 
 const ids = @import("../core/ids.zig");
+const prp = @import("../core/prp.zig");
 const queue = @import("../controller/queue.zig");
 
 const Cid = ids.Cid;
-const DataPointers = @import("../core/prp.zig").DataPointers;
-const IoQueueBase = @import("../core/prp.zig").IoQueueBase;
+const DataPointers = prp.DataPointers;
+const IoQueueBase = prp.IoQueueBase;
 const Nsid = ids.Nsid;
 const Qid = ids.Qid;
 const Sqe = @import("sqe.zig").Sqe;
