@@ -148,8 +148,6 @@ fn makeAdmin(storage: *AdminStorage) !Controller.Admin.Storage {
     return .{
         .sq = try stdx.dma.Buffer(Sqe).init(storage.sq_backing[0..], DmaAddr.fromInt(ASQ_ADDR)),
         .cq = try stdx.dma.Buffer(Cqe).init(storage.cq_backing[0..], DmaAddr.fromInt(ACQ_ADDR)),
-        .sq_depth = ADMIN_DEPTH,
-        .cq_depth = ADMIN_DEPTH,
         .cid_words = storage.cid_words[0..],
     };
 }
@@ -217,40 +215,6 @@ test "unit: controller init rejects PageSizeUnsupported above CAP.MPSMAX" {
     try testing.expectError(error.PageSizeUnsupported, Controller.init(config));
 }
 
-test "unit: controller init rejects AdminBufferLengthMismatch when sq buffer length differs from configured depth" {
-    var bar: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
-    const sub = try RegSubstrate.init(&bar, scriptedCap());
-
-    var sq_backing: [ADMIN_DEPTH]Sqe align(@alignOf(Sqe)) = @splat(.{});
-    var cq_backing: [ADMIN_DEPTH]Cqe align(@alignOf(Cqe)) = @splat(.{});
-    var cid_words: [stdx.bits.word.count(CidAllocator.Word, ADMIN_DEPTH)]CidAllocator.Word = @splat(0);
-    const admin: Controller.Admin.Storage = .{
-        .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..4], DmaAddr.fromInt(ASQ_ADDR)), // 4 items, depth 8
-        .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DmaAddr.fromInt(ACQ_ADDR)),
-        .sq_depth = ADMIN_DEPTH,
-        .cq_depth = ADMIN_DEPTH,
-        .cid_words = cid_words[0..],
-    };
-    try testing.expectError(error.AdminBufferLengthMismatch, Controller.init(try makeConfig(sub.regs, admin)));
-}
-
-test "unit: controller init rejects AdminBufferLengthMismatch when cq buffer length differs from configured depth" {
-    var bar: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
-    const sub = try RegSubstrate.init(&bar, scriptedCap());
-
-    var sq_backing: [ADMIN_DEPTH]Sqe align(@alignOf(Sqe)) = @splat(.{});
-    var cq_backing: [ADMIN_DEPTH]Cqe align(@alignOf(Cqe)) = @splat(.{});
-    var cid_words: [stdx.bits.word.count(CidAllocator.Word, ADMIN_DEPTH)]CidAllocator.Word = @splat(0);
-    const admin: Controller.Admin.Storage = .{
-        .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DmaAddr.fromInt(ASQ_ADDR)),
-        .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..4], DmaAddr.fromInt(ACQ_ADDR)), // 4 items, depth 8
-        .sq_depth = ADMIN_DEPTH,
-        .cq_depth = ADMIN_DEPTH,
-        .cid_words = cid_words[0..],
-    };
-    try testing.expectError(error.AdminBufferLengthMismatch, Controller.init(try makeConfig(sub.regs, admin)));
-}
-
 test "unit: controller init rejects AdminPairMismatch when admin SQ and CQ depths differ" {
     var bar: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
     const sub = try RegSubstrate.init(&bar, scriptedCap());
@@ -261,8 +225,6 @@ test "unit: controller init rejects AdminPairMismatch when admin SQ and CQ depth
     const admin: Controller.Admin.Storage = .{
         .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DmaAddr.fromInt(ASQ_ADDR)),
         .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DmaAddr.fromInt(ACQ_ADDR)),
-        .sq_depth = 8,
-        .cq_depth = 4,
         .cid_words = cid_words[0..],
     };
     try testing.expectError(error.AdminPairMismatch, Controller.init(try makeConfig(sub.regs, admin)));
@@ -272,16 +234,15 @@ test "unit: controller init propagates QueueDepthOutOfRange from Aqa.fromDepths 
     var bar: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
     const sub = try RegSubstrate.init(&bar, scriptedCap());
 
-    // Zero-length backing storage would still get past the length equality
-    // check because sq_depth = 0; Aqa.fromDepths(0) is the guardrail.
+    // Zero-length backing storage still passes the pair-length equality
+    // check because sq.len() == cq.len() == 0; `Aqa.fromDepths(0)` is the
+    // guardrail.
     var sq_backing: [0]Sqe = undefined;
     var cq_backing: [0]Cqe = undefined;
     var cid_words: [1]CidAllocator.Word = @splat(0);
     const admin: Controller.Admin.Storage = .{
         .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DmaAddr.fromInt(ASQ_ADDR)),
         .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DmaAddr.fromInt(ACQ_ADDR)),
-        .sq_depth = 0,
-        .cq_depth = 0,
         .cid_words = cid_words[0..],
     };
     try testing.expectError(error.QueueDepthOutOfRange, Controller.init(try makeConfig(sub.regs, admin)));
@@ -303,8 +264,6 @@ test "unit: controller init propagates Misaligned from QueueBase.fromDmaAddr for
     const admin: Controller.Admin.Storage = .{
         .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DmaAddr.fromInt(0x1_0000_0080)), // 128-B aligned, not 4 KiB
         .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DmaAddr.fromInt(ACQ_ADDR)),
-        .sq_depth = ADMIN_DEPTH,
-        .cq_depth = ADMIN_DEPTH,
         .cid_words = cid_words[0..],
     };
     try testing.expectError(error.Misaligned, Controller.init(try makeConfig(sub.regs, admin)));
@@ -320,8 +279,6 @@ test "unit: controller init propagates Misaligned from QueueBase.fromDmaAddr for
     const admin: Controller.Admin.Storage = .{
         .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DmaAddr.fromInt(ASQ_ADDR)),
         .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DmaAddr.fromInt(0x2_0000_0080)), // 128-B aligned
-        .sq_depth = ADMIN_DEPTH,
-        .cq_depth = ADMIN_DEPTH,
         .cid_words = cid_words[0..],
     };
     try testing.expectError(error.Misaligned, Controller.init(try makeConfig(sub.regs, admin)));
@@ -337,8 +294,6 @@ test "unit: controller init rejects undersized admin CID bitmap before enable wr
     const admin: Controller.Admin.Storage = .{
         .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DmaAddr.fromInt(ASQ_ADDR)),
         .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DmaAddr.fromInt(ACQ_ADDR)),
-        .sq_depth = ADMIN_DEPTH,
-        .cq_depth = ADMIN_DEPTH,
         .cid_words = cid_words[0..],
     };
     try testing.expectError(error.OutOfBounds, Controller.init(try makeConfig(sub.regs, admin)));

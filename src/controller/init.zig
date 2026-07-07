@@ -35,7 +35,6 @@ pub const Error = error{
     NotReady,
     PageSizeUnsupported,
     UnsupportedCommandSet,
-    AdminBufferLengthMismatch,
     AdminPairMismatch,
 } || QueueBase.Error || Aqa.Error || stdx.time.Duration.Error || queue.InitError || queue.ReserveError || queue.FlushError || queue.PollError;
 
@@ -59,8 +58,6 @@ pub fn Controller(comptime Backend: type) type {
             pub const Storage = struct {
                 sq: stdx.dma.Buffer(Sqe),
                 cq: stdx.dma.Buffer(Cqe),
-                sq_depth: u16,
-                cq_depth: u16,
                 cid_words: []queue.CidAllocator.Word,
             };
 
@@ -115,17 +112,17 @@ pub fn Controller(comptime Backend: type) type {
             if (mps_bytes < cap.minPageSizeBytes()) return error.PageSizeUnsupported;
             if (mps_bytes > cap.maxPageSizeBytes()) return error.PageSizeUnsupported;
 
-            if (config.admin.sq.len() != config.admin.sq_depth) return error.AdminBufferLengthMismatch;
-            if (config.admin.cq.len() != config.admin.cq_depth) return error.AdminBufferLengthMismatch;
-            if (config.admin.sq_depth != config.admin.cq_depth) return error.AdminPairMismatch;
+            if (config.admin.sq.len() != config.admin.cq.len()) return error.AdminPairMismatch;
+
+            const depth = std.math.cast(u16, config.admin.sq.len()) orelse return error.QueueDepthOutOfRange;
 
             _ = try Aqa.fromDepths(.{
-                .submission_entries = config.admin.sq_depth,
-                .completion_entries = config.admin.cq_depth,
+                .submission_entries = depth,
+                .completion_entries = depth,
             });
             _ = try QueueBase.fromDmaAddr(config.admin.sq.dmaAddr());
             _ = try QueueBase.fromDmaAddr(config.admin.cq.dmaAddr());
-            _ = try queue.CidAllocator.wrap(config.admin.cid_words, config.admin.sq_depth);
+            _ = try queue.CidAllocator.wrap(config.admin.cid_words, depth);
 
             const ready_timeout = if (config.ready_timeout_override) |override|
                 override
@@ -167,9 +164,10 @@ pub fn Controller(comptime Backend: type) type {
             if (self.state != .disabled) return error.NotDisabled;
 
             const storage = self.admin._storage;
+            const depth: u16 = @intCast(storage.sq.len());
             const aqa = Aqa.fromDepths(.{
-                .submission_entries = storage.sq_depth,
-                .completion_entries = storage.cq_depth,
+                .submission_entries = depth,
+                .completion_entries = depth,
             }) catch unreachable;
             const asq = QueueBase.fromDmaAddr(storage.sq.dmaAddr()) catch unreachable;
             const acq = QueueBase.fromDmaAddr(storage.cq.dmaAddr()) catch unreachable;
@@ -186,14 +184,14 @@ pub fn Controller(comptime Backend: type) type {
 
             const admin_sq = queue.SubmissionQueue.init(.{
                 .qid = .admin,
-                .capacity = storage.sq_depth,
+                .capacity = depth,
                 .ring = storage.sq,
                 .cid_words = storage.cid_words,
                 .doorbell = self.db.submissionQueue(.admin),
             }) catch unreachable;
             const admin_cq = Pair.Cq.init(.{
                 .qid = .admin,
-                .capacity = storage.cq_depth,
+                .capacity = depth,
                 .ring = storage.cq,
                 .doorbell = self.db.completionQueue(.admin),
                 .clock = self.clock,

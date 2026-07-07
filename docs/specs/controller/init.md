@@ -162,7 +162,6 @@ pub const Error = error{
     NotReady,
     PageSizeUnsupported,
     UnsupportedCommandSet,
-    AdminBufferLengthMismatch,
     AdminPairMismatch,
 }
     || QueueBase.Error
@@ -193,8 +192,6 @@ pub fn Controller(comptime Backend: type) type {
             pub const Storage = struct {
                 sq: stdx.dma.Buffer(Sqe),
                 cq: stdx.dma.Buffer(Cqe),
-                sq_depth: u16,
-                cq_depth: u16,
                 cid_words: []queue.CidAllocator.Word,
             };
 
@@ -249,17 +246,17 @@ pub fn Controller(comptime Backend: type) type {
             if (mps_bytes < cap.minPageSizeBytes()) return error.PageSizeUnsupported;
             if (mps_bytes > cap.maxPageSizeBytes()) return error.PageSizeUnsupported;
 
-            if (config.admin.sq.len() != config.admin.sq_depth) return error.AdminBufferLengthMismatch;
-            if (config.admin.cq.len() != config.admin.cq_depth) return error.AdminBufferLengthMismatch;
-            if (config.admin.sq_depth != config.admin.cq_depth) return error.AdminPairMismatch;
+            if (config.admin.sq.len() != config.admin.cq.len()) return error.AdminPairMismatch;
+
+            const depth = std.math.cast(u16, config.admin.sq.len()) orelse return error.QueueDepthOutOfRange;
 
             _ = try Aqa.fromDepths(.{
-                .submission_entries = config.admin.sq_depth,
-                .completion_entries = config.admin.cq_depth,
+                .submission_entries = depth,
+                .completion_entries = depth,
             });
             _ = try QueueBase.fromDmaAddr(config.admin.sq.dmaAddr());
             _ = try QueueBase.fromDmaAddr(config.admin.cq.dmaAddr());
-            _ = try queue.CidAllocator.wrap(config.admin.cid_words, config.admin.sq_depth);
+            _ = try queue.CidAllocator.wrap(config.admin.cid_words, depth);
 
             const ready_timeout = if (config.ready_timeout_override) |override|
                 override
@@ -301,9 +298,10 @@ pub fn Controller(comptime Backend: type) type {
             if (self.state != .disabled) return error.NotDisabled;
 
             const storage = self.admin._storage;
+            const depth: u16 = @intCast(storage.sq.len());
             const aqa = Aqa.fromDepths(.{
-                .submission_entries = storage.sq_depth,
-                .completion_entries = storage.cq_depth,
+                .submission_entries = depth,
+                .completion_entries = depth,
             }) catch unreachable;
             const asq = QueueBase.fromDmaAddr(storage.sq.dmaAddr()) catch unreachable;
             const acq = QueueBase.fromDmaAddr(storage.cq.dmaAddr()) catch unreachable;
@@ -320,14 +318,14 @@ pub fn Controller(comptime Backend: type) type {
 
             const admin_sq = queue.SubmissionQueue.init(.{
                 .qid = .admin,
-                .capacity = storage.sq_depth,
+                .capacity = depth,
                 .ring = storage.sq,
                 .cid_words = storage.cid_words,
                 .doorbell = self.db.submissionQueue(.admin),
             }) catch unreachable;
             const admin_cq = Pair.Cq.init(.{
                 .qid = .admin,
-                .capacity = storage.cq_depth,
+                .capacity = depth,
                 .ring = storage.cq,
                 .doorbell = self.db.completionQueue(.admin),
                 .clock = self.clock,
@@ -420,7 +418,7 @@ pub fn Controller(comptime Backend: type) type {
 
 | Operation | Allocation | Waiting | Bounds | Concurrency | Ordering | Errors |
 | --- | --- | --- | --- | --- | --- | --- |
-| `[znvme]` `Controller(Backend).init` | never | never | O(1) | value type | none | `UnsupportedCommandSet`, `PageSizeUnsupported`, `AdminBufferLengthMismatch`, `AdminPairMismatch`, `Aqa.Error`, `QueueBase.Error`, `queue.CidAllocator.Error`, `stdx.time.Duration.Error` |
+| `[znvme]` `Controller(Backend).init` | never | never | O(1) | value type | none | `UnsupportedCommandSet`, `PageSizeUnsupported`, `AdminPairMismatch`, `Aqa.Error`, `QueueBase.Error`, `queue.CidAllocator.Error`, `stdx.time.Duration.Error` |
 | `[znvme]` `Controller.doorbells` | never | never | O(1) | borrowed value | none | infallible |
 | `[znvme]` `Controller.reset` | never | via `stdx.io.poll.until` composing caller `*Backoff` and `Deadline` | O(attempts) × (predicate + `Backoff.next`) | caller-serialized, single-owner over `*Backoff` | `mmio.acquire` after CSTS load | `Timeout`, `ControllerFatal` |
 | `[znvme]` `Controller.enable` | never | via `stdx.io.poll.until` composing caller `*Backoff` and `Deadline` | O(attempts) × (predicate + `Backoff.next`) | caller-serialized, single-owner over `*Backoff` | `mmio.acquire` after CSTS load | `NotDisabled`, `Timeout`, `ControllerFatal` |
@@ -466,8 +464,6 @@ var ctrl = try Controller.init(.{
     .admin = .{
         .sq = try stdx.dma.Buffer(Sqe).init(&admin_sq_backing, asq_addr),
         .cq = try stdx.dma.Buffer(Cqe).init(&admin_cq_backing, acq_addr),
-        .sq_depth = depth,
-        .cq_depth = depth,
         .cid_words = &admin_cid_words,
     },
     .page_size = try nvme.core.prp.PageSize.fromBytes(4096),
@@ -523,8 +519,6 @@ try ctrl.shutdown(.normal, shutdown_deadline, &backoff);
 - `[znvme]` `unit: controller init rejects UnsupportedCommandSet when CAP.CSS bit 0 is clear`.
 - `[znvme]` `unit: controller init rejects PageSizeUnsupported below CAP.MPSMIN`.
 - `[znvme]` `unit: controller init rejects PageSizeUnsupported above CAP.MPSMAX`.
-- `[znvme]` `unit: controller init rejects AdminBufferLengthMismatch when sq buffer length differs from configured depth`.
-- `[znvme]` `unit: controller init rejects AdminBufferLengthMismatch when cq buffer length differs from configured depth`.
 - `[znvme]` `unit: controller init rejects AdminPairMismatch when admin SQ and CQ depths differ`.
 - `[znvme]` `unit: controller init propagates QueueDepthOutOfRange from Aqa.fromDepths before enable writes registers`.
 - `[znvme]` `unit: controller init propagates Misaligned from QueueBase.fromDmaAddr for unaligned admin SQ base`.

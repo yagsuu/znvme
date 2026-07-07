@@ -68,8 +68,6 @@ var ctrl = try Controller.init(.{
     .admin = .{
         .sq = try stdx.dma.Buffer(Sqe).init(&admin_sq_backing, asq_addr),
         .cq = try stdx.dma.Buffer(Cqe).init(&admin_cq_backing, acq_addr),
-        .sq_depth = depth,
-        .cq_depth = depth,
         .cid_words = &admin_cid_words,
     },
     .page_size = try nvme.core.prp.PageSize.fromBytes(4096),
