@@ -534,7 +534,7 @@ try ctrl.shutdown(.normal, shutdown_deadline, &backoff);
 - `[znvme]` `unit: controller init derives doorbells from CAP.DSTRD` — `ctrl.doorbells().submissionQueue(.admin).offset() == 0x1000`.
 - `[znvme]` `unit: controller init honors ready_timeout_override as a verbatim replacement (shortens and lengthens)`.
 - `[znvme]` `unit: controller reset clears CC.EN when set and polls CSTS.RDY to zero`.
-- `[znvme]` `unit: controller reset is idempotent when CC.EN already clear`.
+- `[znvme]` `unit: controller reset is idempotent on double-call when CC.EN already clear`.
 - `[znvme]` `unit: controller enable writes AQA ASQ ACQ and CC with mps css iosqes iocqes` — inspects exact bytes in the register buffer.
 - `[znvme]` `unit: controller enable rejects NotDisabled when state is not disabled`.
 - `[znvme]` `unit: controller enable returns Timeout when CSTS.RDY never sets`.
@@ -543,7 +543,7 @@ try ctrl.shutdown(.normal, shutdown_deadline, &backoff);
 - `[znvme]` `unit: controller enable transitions admin.ready() true when CSTS.RDY sets` — verifies `ctrl.admin.ready() == true` and `ctrl.admin.sq().qid == .admin` and `ctrl.admin.cq().qid == .admin`.
 - `[znvme]` `unit: controller reset clears CC.EN and polls CSTS.RDY to zero and transitions admin.ready() false`.
 - `[znvme]` `unit: controller reset returns Timeout when CSTS.RDY never clears`.
-- `[znvme]` `unit: controller reset is idempotent when CC.EN is already clear` — no CC write observed, `state` transitions to `.disabled`.
+- `[znvme]` `unit: controller reset is idempotent with no CC write when CC.EN is already clear` — sentinel-poisoned CC lane confirms no CC write observed, `state` transitions to `.disabled`.
 - `[znvme]` `unit: controller shutdown normal sets CC.SHN to 01b and polls SHST to complete`.
 - `[znvme]` `unit: controller shutdown abrupt sets CC.SHN to 10b and polls SHST to complete`.
 - `[znvme]` `unit: controller shutdown returns NotReady when state is not ready`.

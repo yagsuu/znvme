@@ -419,7 +419,7 @@ test "unit: controller reset clears CC.EN when set and polls CSTS.RDY to zero" {
     try testing.expect(!ctrl.admin.ready());
 }
 
-test "unit: controller reset is idempotent when CC.EN already clear" {
+test "unit: controller reset is idempotent on double-call when CC.EN already clear" {
     var bar: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
     const sub = try RegSubstrate.init(&bar, scriptedCap());
     // CC starts zero; CSTS.RDY = 0.
@@ -436,7 +436,7 @@ test "unit: controller reset is idempotent when CC.EN already clear" {
     try testing.expectEqual(ctrl_init.State.disabled, ctrl.state);
 }
 
-test "unit: controller reset is idempotent when CC.EN is already clear" {
+test "unit: controller reset is idempotent with no CC write when CC.EN is already clear" {
     // Precondition variant: assert no CC write is observed when CC.EN is
     // already clear on entry, and state transitions to `.disabled`.
     var bar: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
