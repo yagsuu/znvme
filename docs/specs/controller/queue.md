@@ -130,15 +130,15 @@ const c = try pair.pollOne(deadline, &backoff)
 
 `[znvme]` `CompletionQueue(Backend).pollOne(deadline, backoff)` is sugar: it calls `poll` with a stack `[1]Completion` and returns slot `0`.
 
-`[znvme]` `Pair(Backend).poll(out, deadline, backoff)` composes `CompletionQueue.poll` with submission-side validation and CID release. Both must be all-or-nothing: `poll` first drains contiguous CQEs into a scratch stack `[N]Completion` (with `N == out.len` capped at a small comptime constant like `64`; larger `out` slices drain in multiple internal chunks each doing one doorbell ring), and validates every completion in the chunk **before advancing state**. If any completion in the drained chunk has:
+`[znvme]` `Pair(Backend).poll(out, deadline, backoff)` composes `CompletionQueue.poll` with submission-side validation and CID release. `Pair.poll` invokes `CompletionQueue.poll` for a chunk first (with `N == out.len` capped at a small comptime constant like `64`; larger `out` slices drain in multiple internal chunks, each doing one CQ head doorbell ring), then validates every completion in the returned chunk. If any completion in the chunk has:
 
 - `[znvme]` `completion.sqid.raw() != sq.qid.raw()` → `error.SqidMismatch`;
 - `[znvme]` `completion.sqhd >= sq.capacity` → `error.InvalidSubmissionQueueHead`;
 - `[znvme]` `completion.cid` was not allocated in `sq.cids` → `error.UnknownCommandId`;
 
-then `Pair.poll` returns the error, `cq.head` / `cq.expected_phase` / `sq.head` / `sq.cids` are all unchanged, and the caller sees no partial drain. On success, `Pair.poll` rings the CQ head doorbell exactly once for the chunk, advances `cq.head` and `cq.expected_phase`, updates `sq.head = last.sqhd`, releases every drained CID via `sq.cids.freeOne`, copies the drained completions into `out[start..start+count]`, and repeats for the next chunk if `out` had more room and the CQ had more posted completions. `Pair.poll` returns the total number of completions written into `out`.
+then `Pair.poll` returns the error. Submission-side state (`sq.head`, `sq.cids`) is unchanged for the failing chunk, and no completion from the failing chunk is written into `out`. Completion-side state (`cq.head`, `cq.expected_phase`) has already advanced inside `CompletionQueue.poll` because the CQ head doorbell was rung before validation ran — the failing CQE has been consumed from the CQ. On chunk success, `Pair.poll` updates `sq.head = last.sqhd`, releases every drained CID via `sq.cids.freeOne` (safe because per-pair caller-serialization prevents concurrent frees), copies the drained completions into `out[start..start+count]`, and repeats for the next chunk if `out` had more room and the CQ had more posted completions. `Pair.poll` returns the total number of completions written into `out`.
 
-`[znvme]` If a chunk-internal validation error causes `Pair.poll` to abort, the CQE the failing entry read still lives at `ring[cq.head + i]` and its phase still matches `expected_phase`. A retry re-decodes and re-validates it. This gives callers the "controller fault → reset" pattern without a mid-drain torn state.
+`[znvme]` A chunk-internal validation error is a controller-fault signal, not a retry point. Because the CQ head doorbell rings before validation, retrying `Pair.poll` will not re-observe the failing CQE — the caller `Controller.reset`s the pair and re-drives bring-up. Prior chunks (from a multi-chunk drain) that already succeeded remain written into `out[0..start]` and their CIDs freed, but a caller sees only the returned `error`, not the partial count; `out[0..start]` is not accessible on the error return.
 
 `[znvme]` `Pair(Backend).pollOne(deadline, backoff)` is sugar over `Pair.poll` with a stack `[1]Completion`.
 
@@ -146,7 +146,7 @@ then `Pair.poll` returns the error, `cq.head` / `cq.expected_phase` / `sq.head` 
 
 ### CID lifecycle
 
-`[znvme]` `reserveSlot` allocates via `TagAllocator.Bounded.allocOne` (lowest free CID). `stage` does not touch CID state. `poll` / `pollOne` release each drained CID via `TagAllocator.Bounded.freeOne` after the CQ head doorbell store succeeds and after the chunk-wide validation passes. `releaseReservation` frees a still-unpublished reservation's CID without publishing. A device-returned CID that was never allocated is a validation error, not a programmer error — `Pair.poll` returns `error.UnknownCommandId` and does not touch queue state; the caller treats it as a controller/device fault.
+`[znvme]` `reserveSlot` allocates via `TagAllocator.Bounded.allocOne` (lowest free CID). `stage` does not touch CID state. `poll` / `pollOne` release each drained CID via `TagAllocator.Bounded.freeOne` after the CQ head doorbell store succeeds and after the chunk-wide validation passes. `releaseReservation` frees a still-unpublished reservation's CID without publishing. A device-returned CID that was never allocated is a validation error, not a programmer error — `Pair.poll` returns `error.UnknownCommandId` and does not touch submission-side state (`sq.head`, `sq.cids`); the caller treats it as a controller/device fault and resets the pair (the CQ head has already advanced).
 
 ### Cross-boundary hooks
 
@@ -406,10 +406,13 @@ pub fn CompletionQueue(comptime Backend: type) type {
                 FirstPredicate{ .cq = self },
             );
 
-            // Drain contiguous matched CQEs without wrapping.
+            // Drain contiguous matched CQEs without wrapping. `count += 1`
+            // is inline before the wrap check because Zig's `while (...) : (expr)`
+            // continue-expression does not fire on `break`.
             var count: usize = 0;
             var probe = self.head;
-            while (count < out.len) : (count += 1) {
+            var wrapped = false;
+            while (count < out.len) {
                 const slot = &self.ring.constSlice()[probe];
                 if (count > 0) {
                     // First slot's phase already matched inside poll.until.
@@ -425,15 +428,21 @@ pub fn CompletionQueue(comptime Backend: type) type {
                     .dw0 = slot.dw0(),
                     .dw1 = slot.dw1(),
                 };
+                count += 1;
                 const next = probe +% 1;
-                if (next == self.capacity) break; // Stop at wrap; next call handles the flip.
+                if (next == self.capacity) {
+                    wrapped = true;
+                    break; // Stop at wrap; next call handles the flip.
+                }
                 probe = next;
             }
             // count is at least 1 (the first predicate matched).
             const new_head: u16 = @intCast((self.head + count) % self.capacity);
             try self.db.setHead(new_head);
 
-            if (new_head < self.head) self.expected_phase ^= 1;
+            // Flip phase from `wrapped`, not `new_head < self.head`: the
+            // latter misses the head=0 full-wrap where both are zero.
+            if (wrapped) self.expected_phase ^= 1;
             self.head = new_head;
             return count;
         }
