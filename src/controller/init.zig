@@ -37,14 +37,7 @@ pub const Error = error{
     UnsupportedCommandSet,
     AdminBufferLengthMismatch,
     AdminPairMismatch,
-}
-    || QueueBase.Error
-    || Aqa.Error
-    || stdx.time.Duration.Error
-    || queue.InitError
-    || queue.ReserveError
-    || queue.FlushError
-    || queue.PollError;
+} || QueueBase.Error || Aqa.Error || stdx.time.Duration.Error || queue.InitError || queue.ReserveError || queue.FlushError || queue.PollError;
 
 pub const default_backoff_policy: stdx.time.Backoff.Policy = .{
     .spin_iterations = 128,
