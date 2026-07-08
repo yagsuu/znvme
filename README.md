@@ -4,9 +4,8 @@ A Zig-native NVMe 2.0 protocol library.
 
 `znvme` owns the wire types, register layout, queue mechanics, and command
 builders defined by the NVMe Base Specification 2.0 and the NVM Command Set
-Specification 1.0. It composes domain-neutral primitives from `stdx` (MMIO
-windows, DMA buffers, monotonic clocks, tagged identifiers, poll loops) and
-never allocates.
+Specification 1.0. It never allocates; callers provide storage, timing, and
+device access.
 
 The surface is role-symmetric: the same wire types and validators serve host
 drivers composing register accessors, doorbell arithmetic, admin/NVM command
@@ -133,15 +132,15 @@ assertions colocated with the type body. Every packed lane exposes `raw()` and
 ## Design constraints
 
 - **No allocation.** Every ring, bitmap, PRP list, and register window is caller-owned.
-- **Polled completions.** The caller drives `stdx.io.poll.until` with its own
-  `stdx.time.Deadline` and `stdx.time.Backoff`. `znvme` never touches wall time
-  and does not configure interrupts.
+- **Polled completions.** Callers drive deadlines and backoff. `znvme` does not
+  configure interrupts.
 - **One admin + N caller-owned I/O queue pairs.** No queue-set aggregate,
   no cross-pair scheduler.
 - **Two type worlds.** Wire types are `extern struct` / `packed struct(uN)` with
-  compile-time layout assertions; semantic types compose `stdx` primitives.
-- **Injected clock backend.** `Controller(Backend)` and `CompletionQueue(Backend)`
-  are generic over `stdx.time.Clock.Monotonic(Backend)`.
+  compile-time layout assertions; semantic types compose caller-owned storage
+  and backend handles.
+- **Injected clock backend.** `Controller(Backend)` and
+  `CompletionQueue(Backend)` are generic over a monotonic clock backend.
 - **Little-endian x86_64.** Wire decoding assumes native little-endian loads.
 
 The current surface covers the NVM Command Set only (`CC.CSS = 0`) and uses
@@ -188,9 +187,9 @@ Per-module required-test manifests are enumerated in
 
 ## Documentation
 
-Normative surface lives under `docs/specs/`. Every claim marked `[nvme]` cites
-NVMe Base 2.0 or NVM Command Set 1.0; every `[znvme]` claim is a `znvme` design
-choice. Design decisions and their resolution are recorded in
+Normative surface lives under `docs/specs/`. `[nvme]` marks content sourced
+from NVMe Base 2.0 or NVM Command Set 1.0; unmarked spec text is `znvme`
+design. Design decisions and their resolution are recorded in
 [`docs/decisions.md`](docs/decisions.md).
 
 Start with:

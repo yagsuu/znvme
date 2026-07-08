@@ -2,58 +2,58 @@
 
 Status: Approved.
 
-`[znvme]` `admin` owns the typed builder families for the admin opcodes the boot path issues: Identify (`06h`), Create/Delete I/O Submission Queue (`01h` / `00h`), Create/Delete I/O Completion Queue (`05h` / `04h`), Set Features (`09h`), Get Features (`0Ah`), and Abort (`08h`). Each builder reserves an SQ slot via `SubmissionQueue.reserveSlot`, stamps the SQE in place through `Sqe.init(reservation.slot, .{ ... })`, and stages — a one-call flow that returns a `queue.Handle` the caller pairs with later completions. The caller rings the SQ tail doorbell with `try sq.flush()` when a batch (or a single command) is ready to publish.
+`admin` owns the typed builder families for the admin opcodes the boot path issues: Identify (`06h`), Create/Delete I/O Submission Queue (`01h` / `00h`), Create/Delete I/O Completion Queue (`05h` / `04h`), Set Features (`09h`), Get Features (`0Ah`), and Abort (`08h`). Each builder reserves an SQ slot via `SubmissionQueue.reserveSlot`, stamps the SQE in place through `Sqe.init(reservation.slot, .{ ... })`, and stages — a one-call flow that returns a `queue.Handle` the caller pairs with later completions. The caller rings the SQ tail doorbell with `try sq.flush()` when a batch (or a single command) is ready to publish.
 
-`[znvme]` `admin` also owns the response decoders for Set Features and Get Features (Number of Queues), which extract the allocated queue counts from completion `CDW0`.
+`admin` also owns the response decoders for Set Features and Get Features (Number of Queues), which extract the allocated queue counts from completion `CDW0`.
 
-`[znvme]` `admin` does not decode Identify response bytes — that lives in `docs/specs/identify/*.md`.
+`admin` does not decode Identify response bytes — that lives in `docs/specs/identify/*.md`.
 
 ## Owned scope
 
-`[znvme]` This spec owns:
+This spec owns:
 
-- `[znvme]` `Opcode`, a non-exhaustive `enum(u8)` for admin opcodes;
-- `[znvme]` `Cns`, a non-exhaustive `enum(u8)` for Identify CNS values;
-- `[znvme]` `Fid`, a non-exhaustive `enum(u8)` for Feature Identifier values;
-- `[znvme]` `FeatureSelect`, a non-exhaustive `enum(u3)` for Get Features SEL values;
-- `[znvme]` `Identify.controller`, `Identify.namespace`, `Identify.activeNamespaceList` — the three CNS variants in the first-slice scope, each with its NSID admissibility;
-- `[znvme]` `CreateIoSubmissionQueue.encode`, `CreateIoCompletionQueue.encode`, `DeleteIoSubmissionQueue.encode`, `DeleteIoCompletionQueue.encode` — I/O queue management;
-- `[znvme]` `Abort.encode`;
-- `[znvme]` `NumberOfQueues.set`, `NumberOfQueues.get`, and `NumberOfQueues.ResponseDw0` — the only Feature Identifier owned by this spec;
-- `[znvme]` per-command `Cdw10` / `Cdw11` / `Cdw12` packed structs with `@bitSizeOf` and `@sizeOf` assertions;
-- `[znvme]` broadcast- and reserved-identifier validation at builder scope.
+- `Opcode`, a non-exhaustive `enum(u8)` for admin opcodes;
+- `Cns`, a non-exhaustive `enum(u8)` for Identify CNS values;
+- `Fid`, a non-exhaustive `enum(u8)` for Feature Identifier values;
+- `FeatureSelect`, a non-exhaustive `enum(u3)` for Get Features SEL values;
+- `Identify.controller`, `Identify.namespace`, `Identify.activeNamespaceList` — the three CNS variants in the first-slice scope, each with its NSID admissibility;
+- `CreateIoSubmissionQueue.encode`, `CreateIoCompletionQueue.encode`, `DeleteIoSubmissionQueue.encode`, `DeleteIoCompletionQueue.encode` — I/O queue management;
+- `Abort.encode`;
+- `NumberOfQueues.set`, `NumberOfQueues.get`, and `NumberOfQueues.ResponseDw0` — the only Feature Identifier owned by this spec;
+- per-command `Cdw10` / `Cdw11` / `Cdw12` packed structs with `@bitSizeOf` and `@sizeOf` assertions;
+- broadcast- and reserved-identifier validation at builder scope.
 
 ## Deferred scope and non-goals
 
-`[znvme]` This spec does not own:
+This spec does not own:
 
-- `[znvme]` admin opcodes outside the boot path: Async Event Request (`0Ch`), Get Log Page (`02h`), Namespace Management (`0Dh`), Namespace Attachment (`15h`), Firmware Commit (`10h`), Firmware Image Download (`11h`), Device Self-test (`14h`), Directive Send/Receive (`19h`/`1Ah`), Virtualization Management (`1Ch`), NVMe-MI Send/Receive (`1Dh`/`1Eh`), Capacity Management (`20h`), Lockdown (`24h`), Doorbell Buffer Config (`7Ch`), Format NVM (`80h`), Security Send/Receive (`81h`/`82h`), Sanitize (`84h`), Get LBA Status (`86h`), Keep Alive (`18h`), Fabrics (`7Fh`), vendor-specific (`C0h`..`FFh`);
-- `[znvme]` Feature Identifiers other than Number of Queues — Arbitration, Power Management, Temperature Threshold, Volatile Write Cache, Interrupt Coalescing, Interrupt Vector Configuration, Write Atomicity Normal, Asynchronous Event Configuration, Autonomous Power State Transition, Host Memory Buffer, Timestamp, Keep Alive Timer, Host Controlled Thermal Management, Non-Operational Power State Config, Read Recovery Level Config, Predictable Latency Mode Config, Predictable Latency Mode Window, LBA Status Information Report Interval, Host Behavior Support, Sanitize Config, Endurance Group Event Configuration, I/O Command Set Profile, Spinup Control;
-- `[znvme]` Set Features `save` and Get Features `select != current` — first-slice builders write `SV = 0` and `SEL = 0` unconditionally;
-- `[znvme]` Identify CNS values outside `00h`/`01h`/`02h` — CSI-parameterized CNS variants (`05h`, `06h`, `07h`, `1Bh`, `1Ch`), NVM Set list (`04h`), namespace attachment list (`12h`), and every I/O Command Set specific CNS are deferred until an approved spec claims them;
-- `[znvme]` UUID Index encoding in CDW14 — reserved zero in the first slice;
-- `[znvme]` fused-operation composition;
-- `[znvme]` Metadata Pointer encoding — admin commands in the first slice use `MPTR = 0`;
-- `[znvme]` Identify response byte parsing — `docs/specs/identify/controller.md`, `docs/specs/identify/namespace.md` (both `IdentifyNamespace` for CNS 00h and `List` for CNS 02h);
-- `[znvme]` completion polling — `SubmissionQueue.stage` returns a `queue.Handle`; the caller flushes and polls through the owning `Pair(Backend)`;
-- `[znvme]` I/O queue creation policy (how many, which QIDs, negotiation logic) — the caller composes the sequence; `docs/specs/examples/controller-bringup.md` illustrates the full flow;
-- `[znvme]` outstanding-QID tracking — this spec does not know whether a Create I/O SQ/CQ command references an already-created queue;
-- `[znvme]` Abort admissibility — per NVMe, aborting a nonexistent CID is a silent no-op with success status; this spec does not pre-filter;
-- `[znvme]` SGL descriptors and the SGL PSDT selection;
-- `[znvme]` big-endian host or target compatibility.
+- admin opcodes outside the boot path: Async Event Request (`0Ch`), Get Log Page (`02h`), Namespace Management (`0Dh`), Namespace Attachment (`15h`), Firmware Commit (`10h`), Firmware Image Download (`11h`), Device Self-test (`14h`), Directive Send/Receive (`19h`/`1Ah`), Virtualization Management (`1Ch`), NVMe-MI Send/Receive (`1Dh`/`1Eh`), Capacity Management (`20h`), Lockdown (`24h`), Doorbell Buffer Config (`7Ch`), Format NVM (`80h`), Security Send/Receive (`81h`/`82h`), Sanitize (`84h`), Get LBA Status (`86h`), Keep Alive (`18h`), Fabrics (`7Fh`), vendor-specific (`C0h`..`FFh`);
+- Feature Identifiers other than Number of Queues — Arbitration, Power Management, Temperature Threshold, Volatile Write Cache, Interrupt Coalescing, Interrupt Vector Configuration, Write Atomicity Normal, Asynchronous Event Configuration, Autonomous Power State Transition, Host Memory Buffer, Timestamp, Keep Alive Timer, Host Controlled Thermal Management, Non-Operational Power State Config, Read Recovery Level Config, Predictable Latency Mode Config, Predictable Latency Mode Window, LBA Status Information Report Interval, Host Behavior Support, Sanitize Config, Endurance Group Event Configuration, I/O Command Set Profile, Spinup Control;
+- Set Features `save` and Get Features `select != current` — first-slice builders write `SV = 0` and `SEL = 0` unconditionally;
+- Identify CNS values outside `00h`/`01h`/`02h` — CSI-parameterized CNS variants (`05h`, `06h`, `07h`, `1Bh`, `1Ch`), NVM Set list (`04h`), namespace attachment list (`12h`), and every I/O Command Set specific CNS are deferred until an approved spec claims them;
+- UUID Index encoding in CDW14 — reserved zero in the first slice;
+- fused-operation composition;
+- Metadata Pointer encoding — admin commands in the first slice use `MPTR = 0`;
+- Identify response byte parsing — `docs/specs/identify/controller.md`, `docs/specs/identify/namespace.md` (both `IdentifyNamespace` for CNS 00h and `List` for CNS 02h);
+- completion polling — `SubmissionQueue.stage` returns a `queue.Handle`; the caller flushes and polls through the owning `Pair(Backend)`;
+- I/O queue creation policy (how many, which QIDs, negotiation logic) — the caller composes the sequence; `docs/specs/examples/controller-bringup.md` illustrates the full flow;
+- outstanding-QID tracking — this spec does not know whether a Create I/O SQ/CQ command references an already-created queue;
+- Abort admissibility — per NVMe, aborting a nonexistent CID is a silent no-op with success status; this spec does not pre-filter;
+- SGL descriptors and the SGL PSDT selection;
+- big-endian host or target compatibility.
 
 ## `stdx` composition
 
-`[znvme]` No direct `stdx` surface. Every stdx primitive reaches admin builders through znvme-owned types.
+No direct `stdx` surface. Every stdx primitive reaches admin builders through znvme-owned types.
 
-`[znvme]` Composed through znvme types:
+Composed through znvme types:
 
-- `[znvme]` `controller.queue.SubmissionQueue` — `reserveSlot`, `stage`, `flush`, `releaseReservation`;
-- `[znvme]` `controller.queue.Handle` — returned from `stage`, propagated by every builder;
-- `[znvme]` `controller.queue.ReserveError` — merged into `admin.Error`;
-- `[znvme]` `commands.sqe.Sqe` — SQE authorship in place via `Sqe.init(reservation.slot, params)`;
-- `[znvme]` `core.ids.Cid`, `core.ids.Nsid`, `core.ids.Qid` — identifier parameters and broadcast/reserved predicates;
-- `[znvme]` `core.prp.DataPointers` — DPTR values for Identify, Create I/O CQ/SQ.
+- `controller.queue.SubmissionQueue` — `reserveSlot`, `stage`, `flush`, `releaseReservation`;
+- `controller.queue.Handle` — returned from `stage`, propagated by every builder;
+- `controller.queue.ReserveError` — merged into `admin.Error`;
+- `commands.sqe.Sqe` — SQE authorship in place via `Sqe.init(reservation.slot, params)`;
+- `core.ids.Cid`, `core.ids.Nsid`, `core.ids.Qid` — identifier parameters and broadcast/reserved predicates;
+- `core.prp.DataPointers` — DPTR values for Identify, Create I/O CQ/SQ.
 
 ## NVMe wire encodings
 
@@ -61,83 +61,87 @@ Status: Approved.
 
 `[nvme]` Per NVMe Base Specification 2.0 §5.17:
 
-| Marker | CDW | Bits | Field | Meaning |
-| --- | --- | ---: | --- | --- |
-| `[nvme]` | CDW10 | `07:00` | `CNS` | Controller/Namespace Structure |
-| `[nvme]` | CDW10 | `15:08` | reserved |  |
-| `[nvme]` | CDW10 | `31:16` | `CNTID` | Controller Identifier |
-| `[nvme]` | CDW11 | `15:00` | CNS-specific |  |
-| `[nvme]` | CDW11 | `23:16` | `CSI` | Command Set Identifier |
-| `[nvme]` | CDW11 | `31:24` | reserved |  |
-| `[nvme]` | CDW14 | `07:00` | UUID Index |  |
-
-`[nvme]` First-slice CNS values:
-
-| Marker | CNS | Meaning | NSID |
+| CDW | Bits | Field | Meaning |
 | --- | ---: | --- | --- |
-| `[nvme]` | `00h` | Identify Namespace | target namespace `1..0xFFFF_FFFE`; broadcast forbidden |
-| `[nvme]` | `01h` | Identify Controller | cleared to `0` |
-| `[nvme]` | `02h` | Active Namespace ID list | starting NSID; `0` returns list starting at the first allocated NSID |
+| CDW10 | `07:00` | `CNS` | Controller/Namespace Structure |
+| CDW10 | `15:08` | reserved |  |
+| CDW10 | `31:16` | `CNTID` | Controller Identifier |
+| CDW11 | `15:00` | CNS-specific |  |
+| CDW11 | `23:16` | `CSI` | Command Set Identifier |
+| CDW11 | `31:24` | reserved |  |
+| CDW14 | `07:00` | UUID Index |  |
 
-`[nvme]` DPTR: a caller-owned 4 KiB buffer, encoded through `core.prp.DataPointers`.
+`[nvme]` CNS values used by the first slice:
+
+| CNS | Meaning | NSID |
+| ---: | --- | --- |
+| `00h` | Identify Namespace | target namespace `1..0xFFFF_FFFE`; broadcast forbidden |
+| `01h` | Identify Controller | cleared to `0` |
+| `02h` | Active Namespace ID list | starting NSID; `0` returns list starting at the first allocated NSID |
+
+`[nvme]` Identify transfers a 4 KiB response buffer through DPTR.
+
+The builder encodes DPTR through `core.prp.DataPointers`.
 
 ### Create I/O Submission Queue — opcode `01h`
 
 `[nvme]` Per NVMe Base Specification 2.0 §5.5:
 
-| Marker | CDW | Bits | Field | Meaning |
-| --- | --- | ---: | --- | --- |
-| `[nvme]` | CDW10 | `15:00` | `QID` | I/O SQ identifier |
-| `[nvme]` | CDW10 | `31:16` | `QSIZE` | Queue size, zero-based |
-| `[nvme]` | CDW11 | `00` | `PC` | Physically Contiguous |
-| `[nvme]` | CDW11 | `02:01` | `QPRIO` | Queue Priority |
-| `[nvme]` | CDW11 | `15:03` | reserved |  |
-| `[nvme]` | CDW11 | `31:16` | `CQID` | Completion Queue Identifier |
-| `[nvme]` | CDW12 | `15:00` | `NVMSETID` | NVM Set Identifier |
-| `[nvme]` | CDW12 | `31:16` | reserved |  |
+| CDW | Bits | Field | Meaning |
+| --- | ---: | --- | --- |
+| CDW10 | `15:00` | `QID` | I/O SQ identifier |
+| CDW10 | `31:16` | `QSIZE` | Queue size, zero-based |
+| CDW11 | `00` | `PC` | Physically Contiguous |
+| CDW11 | `02:01` | `QPRIO` | Queue Priority |
+| CDW11 | `15:03` | reserved |  |
+| CDW11 | `31:16` | `CQID` | Completion Queue Identifier |
+| CDW12 | `15:00` | `NVMSETID` | NVM Set Identifier |
+| CDW12 | `31:16` | reserved |  |
 
 `[nvme]` PRP1: SQ base DMA address, memory-page-aligned per NVMe §3.5. NSID cleared to `0`.
 
-`[znvme]` First-slice `PC` is always `1` (physically contiguous). The caller supplies contiguous DMA memory through `core.prp.DataPointers`.
+First-slice `PC` is always `1` (physically contiguous). The caller supplies contiguous DMA memory through `core.prp.DataPointers`.
 
 ### Create I/O Completion Queue — opcode `05h`
 
 `[nvme]` Per NVMe Base Specification 2.0 §5.4:
 
-| Marker | CDW | Bits | Field | Meaning |
-| --- | --- | ---: | --- | --- |
-| `[nvme]` | CDW10 | `15:00` | `QID` | I/O CQ identifier |
-| `[nvme]` | CDW10 | `31:16` | `QSIZE` | Queue size, zero-based |
-| `[nvme]` | CDW11 | `00` | `PC` | Physically Contiguous |
-| `[nvme]` | CDW11 | `01` | `IEN` | Interrupts Enabled |
-| `[nvme]` | CDW11 | `15:02` | reserved |  |
-| `[nvme]` | CDW11 | `31:16` | `IV` | Interrupt Vector |
+| CDW | Bits | Field | Meaning |
+| --- | ---: | --- | --- |
+| CDW10 | `15:00` | `QID` | I/O CQ identifier |
+| CDW10 | `31:16` | `QSIZE` | Queue size, zero-based |
+| CDW11 | `00` | `PC` | Physically Contiguous |
+| CDW11 | `01` | `IEN` | Interrupts Enabled |
+| CDW11 | `15:02` | reserved |  |
+| CDW11 | `31:16` | `IV` | Interrupt Vector |
 
 `[nvme]` PRP1: CQ base DMA address, memory-page-aligned. NSID cleared to `0`.
 
-`[znvme]` First-slice `IEN` defaults to `0` (polled completion path). `IV` is caller-supplied but is ignored by the controller when `IEN = 0`. The caller wraps contiguous, page-aligned CQ memory through `core.prp.IoQueueBase.fromContiguous(buffer, page_size)`, and the builder writes `PRP1 = base.prp1` with `PRP2 = 0`.
+First-slice `IEN` defaults to `0` (polled completion path). `IV` is caller-supplied but is ignored by the controller when `IEN = 0`. The caller wraps contiguous, page-aligned CQ memory through `core.prp.IoQueueBase.fromContiguous(buffer, page_size)`, and the builder writes `PRP1 = base.prp1` with `PRP2 = 0`.
 
 ### Delete I/O Submission Queue / Delete I/O Completion Queue — opcodes `00h` / `04h`
 
 `[nvme]` Per NVMe Base Specification 2.0 §5.6 and §5.7:
 
-| Marker | CDW | Bits | Field |
-| --- | --- | ---: | --- |
-| `[nvme]` | CDW10 | `15:00` | `QID` |
-| `[nvme]` | CDW10 | `31:16` | reserved |
+| CDW | Bits | Field |
+| --- | ---: | --- |
+| CDW10 | `15:00` | `QID` |
+| CDW10 | `31:16` | reserved |
 
 `[nvme]` NSID cleared to `0`. No data transfer.
 
-`[nvme]` NVMe requires the associated CQ to remain alive while any SQ references it; deleting a CQ that still has an SQ attached returns a command-specific error status. This is a device-side check; this spec does not pre-filter.
+`[nvme]` NVMe requires the associated CQ to remain alive while any SQ references it; deleting a CQ that still has an SQ attached returns a command-specific error status.
+
+This is a device-side check; this spec does not pre-filter.
 
 ### Abort — opcode `08h`
 
 `[nvme]` Per NVMe Base Specification 2.0 §5.1:
 
-| Marker | CDW | Bits | Field |
-| --- | --- | ---: | --- |
-| `[nvme]` | CDW10 | `15:00` | `SQID` |
-| `[nvme]` | CDW10 | `31:16` | `CID` |
+| CDW | Bits | Field |
+| --- | ---: | --- |
+| CDW10 | `15:00` | `SQID` |
+| CDW10 | `31:16` | `CID` |
 
 `[nvme]` NSID cleared to `0`. No data transfer.
 
@@ -149,70 +153,70 @@ Status: Approved.
 
 **Set Features CDW10:**
 
-| Marker | Bits | Field |
-| --- | ---: | --- |
-| `[nvme]` | `07:00` | `FID` |
-| `[nvme]` | `30:08` | reserved |
-| `[nvme]` | `31` | `SV` (Save) |
+| Bits | Field |
+| ---: | --- |
+| `07:00` | `FID` |
+| `30:08` | reserved |
+| `31` | `SV` (Save) |
 
 **Get Features CDW10:**
 
-| Marker | Bits | Field |
-| --- | ---: | --- |
-| `[nvme]` | `07:00` | `FID` |
-| `[nvme]` | `10:08` | `SEL` (Select) |
-| `[nvme]` | `31:11` | reserved |
+| Bits | Field |
+| ---: | --- |
+| `07:00` | `FID` |
+| `10:08` | `SEL` (Select) |
+| `31:11` | reserved |
 
 `[nvme]` `SEL` values: `000b` current, `001b` default, `010b` saved, `011b` supported capabilities, `100b`..`111b` reserved.
 
 **Set Features CDW11 (Number of Queues):**
 
-| Marker | Bits | Field |
-| --- | ---: | --- |
-| `[nvme]` | `15:00` | `NSQR` — Number of I/O SQ requested, zero-based |
-| `[nvme]` | `31:16` | `NCQR` — Number of I/O CQ requested, zero-based |
+| Bits | Field |
+| ---: | --- |
+| `15:00` | `NSQR` — Number of I/O SQ requested, zero-based |
+| `31:16` | `NCQR` — Number of I/O CQ requested, zero-based |
 
 **Response CDW0 (Number of Queues):**
 
-| Marker | Bits | Field |
-| --- | ---: | --- |
-| `[nvme]` | `15:00` | `NSQA` — Number of I/O SQ allocated, zero-based |
-| `[nvme]` | `31:16` | `NCQA` — Number of I/O CQ allocated, zero-based |
+| Bits | Field |
+| ---: | --- |
+| `15:00` | `NSQA` — Number of I/O SQ allocated, zero-based |
+| `31:16` | `NCQA` — Number of I/O CQ allocated, zero-based |
 
 `[nvme]` NSID cleared to `0`. No data transfer.
 
-`[znvme]` First-slice Set Features writes `SV = 0` (no persistence). First-slice Get Features writes `SEL = 0` (current). The one-based public API on `NumberOfQueues.Requested` / `Allocated` maps to the wire's zero-based encoding at the builder boundary — a caller who asks for one submission queue writes `NSQR = 0` on the wire and reads `NSQA = 0` back as one allocated queue.
+First-slice Set Features writes `SV = 0` (no persistence). First-slice Get Features writes `SEL = 0` (current). The one-based public API on `NumberOfQueues.Requested` / `Allocated` maps to the wire's zero-based encoding at the builder boundary — a caller who asks for one submission queue writes `NSQR = 0` on the wire and reads `NSQA = 0` back as one allocated queue.
 
 ## znvme behavior
 
-`[znvme]` Every builder is a struct with static factory methods. No stateful builder value persists across calls; the naming pattern is `Identify.controller(sq, params)`, `CreateIoSubmissionQueue.encode(sq, params)`, `NumberOfQueues.set(sq, params)`. The `SubmissionQueue` allocates every CID from its bounded pool; no `Params` struct carries a `command_id` field — callers read `handle.command_id` off the returned `queue.Handle`.
+Every builder is a struct with static factory methods. No stateful builder value persists across calls; the naming pattern is `Identify.controller(sq, params)`, `CreateIoSubmissionQueue.encode(sq, params)`, `NumberOfQueues.set(sq, params)`. The `SubmissionQueue` allocates every CID from its bounded pool; no `Params` struct carries a `command_id` field — callers read `handle.command_id` off the returned `queue.Handle`.
 
-`[znvme]` Every factory:
+Every factory:
 
-1. `[znvme]` calls `sq.reserveSlot()`;
-2. `[znvme]` sets up an `errdefer sq.releaseReservation(reservation)` so any failure between reservation and `stage` releases the CID and leaves the SQ tail untouched;
-3. `[znvme]` composes a single `Sqe.Init` value carrying opcode, `reservation.command_id`, `namespace_id`, any `data_pointers`, and the per-command `cdw10`..`cdw15` lanes;
-4. `[znvme]` calls `Sqe.init(reservation.slot, sqe_init)` to stamp the reserved slot in place — every unspecified `Init` field is zero, so no lane inherits stale bytes;
-5. `[znvme]` returns `sq.stage(reservation)` — the returned `queue.Handle` carries the reservation-assigned CID, which callers pair with later completions. `stage` is infallible; the SQE is in the ring but not yet visible to the controller. The caller rings the SQ tail doorbell with `try sq.flush()` when a batch (or a single command) is ready to publish.
+1. calls `sq.reserveSlot()`;
+2. sets up an `errdefer sq.releaseReservation(reservation)` so any failure between reservation and `stage` releases the CID and leaves the SQ tail untouched;
+3. composes a single `Sqe.Init` value carrying opcode, `reservation.command_id`, `namespace_id`, any `data_pointers`, and the per-command `cdw10`..`cdw15` lanes;
+4. calls `Sqe.init(reservation.slot, sqe_init)` to stamp the reserved slot in place — every unspecified `Init` field is zero, so no lane inherits stale bytes;
+5. returns `sq.stage(reservation)` — the returned `queue.Handle` carries the reservation-assigned CID, which callers pair with later completions. `stage` is infallible; the SQE is in the ring but not yet visible to the controller. The caller rings the SQ tail doorbell with `try sq.flush()` when a batch (or a single command) is ready to publish.
 
-`[znvme]` Identifier admissibility:
+Identifier admissibility:
 
-- `[znvme]` `Identify.controller` writes `NSID = 0`; the caller does not supply an NSID.
-- `[znvme]` `Identify.namespace` rejects `Nsid.none` and `Nsid.broadcast` with `error.InvalidNamespaceIdentifier`. Broadcast NSID is legal on some Identify CNS values, but none of the first-slice CNS variants (`00h`) accept it.
-- `[znvme]` `Identify.activeNamespaceList` accepts any `Nsid` value — `Nsid.none` (`0`) is the conventional starting NSID.
-- `[znvme]` `CreateIoSubmissionQueue`, `CreateIoCompletionQueue`, `DeleteIoSubmissionQueue`, and `DeleteIoCompletionQueue` reject `Qid.admin` and `Qid.reserved_max` on `qid` with `error.InvalidQueueIdentifier`. `CreateIoSubmissionQueue` additionally rejects `Qid.admin` and `Qid.reserved_max` on `cqid`: the admin CQ is bound to the admin SQ and never associates with an I/O SQ.
-- `[znvme]` `Abort` rejects `Qid.reserved_max` on `sqid`; `Qid.admin` is accepted because callers can legally abort admin commands.
-- `[znvme]` `CreateIoCompletionQueue.Params.base` and `CreateIoSubmissionQueue.Params.base` are `core.prp.IoQueueBase`. The builder writes `PRP1 = base.prp1` and `PRP2 = 0`. Empty or non-page-aligned queue-base buffers are rejected by `IoQueueBase.fromContiguous` before submission and never reach the wire.
+- `Identify.controller` writes `NSID = 0`; the caller does not supply an NSID.
+- `Identify.namespace` rejects `Nsid.none` and `Nsid.broadcast` with `error.InvalidNamespaceIdentifier`. Broadcast NSID is legal on some Identify CNS values, but none of the first-slice CNS variants (`00h`) accept it.
+- `Identify.activeNamespaceList` accepts any `Nsid` value — `Nsid.none` (`0`) is the conventional starting NSID.
+- `CreateIoSubmissionQueue`, `CreateIoCompletionQueue`, `DeleteIoSubmissionQueue`, and `DeleteIoCompletionQueue` reject `Qid.admin` and `Qid.reserved_max` on `qid` with `error.InvalidQueueIdentifier`. `CreateIoSubmissionQueue` additionally rejects `Qid.admin` and `Qid.reserved_max` on `cqid`: the admin CQ is bound to the admin SQ and never associates with an I/O SQ.
+- `Abort` rejects `Qid.reserved_max` on `sqid`; `Qid.admin` is accepted because callers can legally abort admin commands.
+- `CreateIoCompletionQueue.Params.base` and `CreateIoSubmissionQueue.Params.base` are `core.prp.IoQueueBase`. The builder writes `PRP1 = base.prp1` and `PRP2 = 0`. Empty or non-page-aligned queue-base buffers are rejected by `IoQueueBase.fromContiguous` before submission and never reach the wire.
 
-`[znvme]` Queue-size encoding: `CreateIoSubmissionQueue.Params.queue_size` and `CreateIoCompletionQueue.Params.queue_size` are one-based `u16` values (the actual number of entries). The builder writes `qsize_zero_based = queue_size - 1` to the wire. `queue_size == 0` and `queue_size == 1` are rejected with `error.InvalidQueueSize`; NVMe requires at least two entries for an I/O queue.
+Queue-size encoding: `CreateIoSubmissionQueue.Params.queue_size` and `CreateIoCompletionQueue.Params.queue_size` are one-based `u16` values (the actual number of entries). The builder writes `qsize_zero_based = queue_size - 1` to the wire. `queue_size == 0` and `queue_size == 1` are rejected with `error.InvalidQueueSize`; NVMe requires at least two entries for an I/O queue.
 
-`[znvme]` Queue-count encoding: `NumberOfQueues.Requested.submission_queues` and `Requested.completion_queues` are one-based `u16` values. The builder writes `nsqr_zero_based = submission_queues - 1` and `ncqr_zero_based = completion_queues - 1` to the wire. `submission_queues == 0` or `completion_queues == 0` are rejected with `error.InvalidQueueCount`; NVMe requires at least one queue per direction.
+Queue-count encoding: `NumberOfQueues.Requested.submission_queues` and `Requested.completion_queues` are one-based `u16` values. The builder writes `nsqr_zero_based = submission_queues - 1` and `ncqr_zero_based = completion_queues - 1` to the wire. `submission_queues == 0` or `completion_queues == 0` are rejected with `error.InvalidQueueCount`; NVMe requires at least one queue per direction.
 
-`[znvme]` Response decoding: `NumberOfQueues.ResponseDw0.fromRaw(u32)` converts the completion's `dw0` into a typed value; `.allocated()` returns a one-based `Allocated` struct. Callers write `NumberOfQueues.ResponseDw0.fromRaw(completion.dw0).allocated()`. This mirrors every other decoder in the repo (`CompletionStatus.from(u16)`, `Sqe.Cdw0.fromRaw(u32)`).
+Response decoding: `NumberOfQueues.ResponseDw0.fromRaw(u32)` converts the completion's `dw0` into a typed value; `.allocated()` returns a one-based `Allocated` struct. Callers write `NumberOfQueues.ResponseDw0.fromRaw(completion.dw0).allocated()`. This mirrors every other decoder in the repo (`CompletionStatus.from(u16)`, `Sqe.Cdw0.fromRaw(u32)`).
 
-`[znvme]` Reserved lanes: `Sqe.init` overwrites every field of the SQE; `Sqe.Init` fields default to zero so the per-command builder names only the lanes it needs. Reserved bits inside each `Cdw10` / `Cdw11` / `Cdw12` packed struct carry `= 0` defaults so their `.raw()` output zeroes them explicitly.
+Reserved lanes: `Sqe.init` overwrites every field of the SQE; `Sqe.Init` fields default to zero so the per-command builder names only the lanes it needs. Reserved bits inside each `Cdw10` / `Cdw11` / `Cdw12` packed struct carry `= 0` defaults so their `.raw()` output zeroes them explicitly.
 
-`[znvme]` Symmetric CDW decoding: every admin `Cdw*` / `Dw*` packed struct exposes a `fromRaw(u32) Self` decoder alongside its `raw() u32` encoder. Host builders compose values through the field constructors and call `raw()` at the SQE boundary; device emulators decode host CDW writes through `fromRaw(sqe_cdwN)` and then read fields as typed values. Both directions bit-cast; the packed-struct layout is the single source of truth. `NumberOfQueues.ResponseDw0.fromRaw` follows the same pattern for the device-authored response lane.
+Symmetric CDW decoding: every admin `Cdw*` / `Dw*` packed struct exposes a `fromRaw(u32) Self` decoder alongside its `raw() u32` encoder. Host builders compose values through the field constructors and call `raw()` at the SQE boundary; device emulators decode host CDW writes through `fromRaw(sqe_cdwN)` and then read fields as typed values. Both directions bit-cast; the packed-struct layout is the single source of truth. `NumberOfQueues.ResponseDw0.fromRaw` follows the same pattern for the device-authored response lane.
 
 ## Approved API
 
@@ -775,35 +779,35 @@ pub const NumberOfQueues = struct {
 
 | Operation | Allocation | Waiting | Bounds | Concurrency | Ordering | Errors |
 | --- | --- | --- | --- | --- | --- | --- |
-| `[znvme]` `Identify.controller` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` (SQ tail doorbell) | `queue.ReserveError` |
-| `[znvme]` `Identify.namespace` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidNamespaceIdentifier` |
-| `[znvme]` `Identify.activeNamespaceList` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError` |
-| `[znvme]` `CreateIoCompletionQueue.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueIdentifier`, `InvalidQueueSize` |
-| `[znvme]` `CreateIoSubmissionQueue.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueIdentifier`, `InvalidQueueSize` |
-| `[znvme]` `DeleteIoSubmissionQueue.encode` / `DeleteIoCompletionQueue.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueIdentifier` |
-| `[znvme]` `Abort.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueIdentifier` |
-| `[znvme]` `NumberOfQueues.set` / `NumberOfQueues.get` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueCount` |
-| `[znvme]` `NumberOfQueues.ResponseDw0.fromRaw` / `.allocated` / `.raw` | never | never | O(1) | value type | none | infallible |
-| `[znvme]` per-command `Cdw*` / `Dw*` `fromRaw` / `raw` | never | never | O(1) | value type | none | infallible |
+| `Identify.controller` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` (SQ tail doorbell) | `queue.ReserveError` |
+| `Identify.namespace` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidNamespaceIdentifier` |
+| `Identify.activeNamespaceList` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError` |
+| `CreateIoCompletionQueue.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueIdentifier`, `InvalidQueueSize` |
+| `CreateIoSubmissionQueue.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueIdentifier`, `InvalidQueueSize` |
+| `DeleteIoSubmissionQueue.encode` / `DeleteIoCompletionQueue.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueIdentifier` |
+| `Abort.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueIdentifier` |
+| `NumberOfQueues.set` / `NumberOfQueues.get` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueCount` |
+| `NumberOfQueues.ResponseDw0.fromRaw` / `.allocated` / `.raw` | never | never | O(1) | value type | none | infallible |
+| per-command `Cdw*` / `Dw*` `fromRaw` / `raw` | never | never | O(1) | value type | none | infallible |
 
 ## Validation phases
 
-`[znvme]` Per `docs/specs/architecture.md` §"Validation phases":
+Per `docs/specs/architecture.md` §"Validation phases":
 
-- `[znvme]` **Compile time.** `@bitSizeOf` and `@sizeOf` assertions on every `Cdw10` / `Cdw11` / `Cdw12` / `ResponseDw0` / `DeleteQueueCdw10` packed struct.
-- `[znvme]` **Public validation.**
-  - `[znvme]` `Identify.namespace` rejects `Nsid.none` and `Nsid.broadcast`.
-  - `[znvme]` `CreateIoSubmissionQueue`, `CreateIoCompletionQueue`, `DeleteIoSubmissionQueue`, `DeleteIoCompletionQueue` reject `Qid.admin` and `Qid.reserved_max` on `qid`.
-  - `[znvme]` `CreateIoSubmissionQueue` additionally rejects `Qid.admin` and `Qid.reserved_max` on `cqid`.
-  - `[znvme]` `Abort` rejects `Qid.reserved_max` on `sqid`.
-  - `[znvme]` `CreateIoSubmissionQueue.encode` and `CreateIoCompletionQueue.encode` reject `queue_size < 2` with `error.InvalidQueueSize`.
-  - `[znvme]` `NumberOfQueues.set` rejects `submission_queues == 0` or `completion_queues == 0` with `error.InvalidQueueCount`.
-- `[znvme]` **Assertions.**
-  - `[znvme]` None — every runtime-input queue-size / queue-count value is validated through typed errors above. Reservation-slot invariants are asserted inside `controller/queue.md`.
+- **Compile time.** `@bitSizeOf` and `@sizeOf` assertions on every `Cdw10` / `Cdw11` / `Cdw12` / `ResponseDw0` / `DeleteQueueCdw10` packed struct.
+- **Public validation.**
+  - `Identify.namespace` rejects `Nsid.none` and `Nsid.broadcast`.
+  - `CreateIoSubmissionQueue`, `CreateIoCompletionQueue`, `DeleteIoSubmissionQueue`, `DeleteIoCompletionQueue` reject `Qid.admin` and `Qid.reserved_max` on `qid`.
+  - `CreateIoSubmissionQueue` additionally rejects `Qid.admin` and `Qid.reserved_max` on `cqid`.
+  - `Abort` rejects `Qid.reserved_max` on `sqid`.
+  - `CreateIoSubmissionQueue.encode` and `CreateIoCompletionQueue.encode` reject `queue_size < 2` with `error.InvalidQueueSize`.
+  - `NumberOfQueues.set` rejects `submission_queues == 0` or `completion_queues == 0` with `error.InvalidQueueCount`.
+- **Assertions.**
+  - None — every runtime-input queue-size / queue-count value is validated through typed errors above. Reservation-slot invariants are asserted inside `controller/queue.md`.
 
 ## Example usage
 
-`[znvme]` Illustrative shape only; not part of the approved API. `docs/specs/examples/controller-bringup.md` owns the full sequence.
+Illustrative shape only; not part of the approved API. `docs/specs/examples/controller-bringup.md` owns the full sequence.
 
 ```zig
 const std = @import("std");
@@ -864,84 +868,84 @@ try ctrl.admin.sq().flush();
 _ = try ctrl.admin.pollOne(deadline, &backoff);
 ```
 
-## Required tests `[znvme]`
+## Required tests
 
-`[znvme]` Test file `test/commands/admin_test.zig`. Naming per `docs/guidelines/testing.md`.
+Test file `test/commands/admin_test.zig`. Naming per `docs/guidelines/testing.md`.
 
-`[znvme]` Test substrate: a caller-owned `SubmissionQueue` with a scratch SQ ring, a scratch MMIO byte buffer for the doorbell, and `Sqe` accessors on `*const Sqe` verifying encoded slots. No CQE completion is needed at this level; response decoding is tested against fabricated DW0 values.
+Test substrate: a caller-owned `SubmissionQueue` with a scratch SQ ring, a scratch MMIO byte buffer for the doorbell, and `Sqe` accessors on `*const Sqe` verifying encoded slots. No CQE completion is needed at this level; response decoding is tested against fabricated DW0 values.
 
 ### Identify
 
-- `[znvme]` `unit: identify controller stamps opcode 06h nsid zero and cdw10 CNS 01h`.
-- `[znvme]` `unit: identify namespace stamps opcode 06h nsid target and cdw10 CNS 00h`.
-- `[znvme]` `unit: identify namespace rejects Nsid.none`.
-- `[znvme]` `unit: identify namespace rejects Nsid.broadcast`.
-- `[znvme]` `unit: identify active namespace list stamps CNS 02h with starting NSID zero by default`.
-- `[znvme]` `unit: identify Cdw10 encodes CNS in bits 7:0 with reserved and controller_id zero on default`.
-- `[znvme]` `roundtrip: identify controller encode then Sqe accessors decode opcode nsid cdw10 dptr`.
-- `[znvme]` `unit: identify Cdw10 fromRaw round-trips through raw`.
+- `unit: identify controller stamps opcode 06h nsid zero and cdw10 CNS 01h`.
+- `unit: identify namespace stamps opcode 06h nsid target and cdw10 CNS 00h`.
+- `unit: identify namespace rejects Nsid.none`.
+- `unit: identify namespace rejects Nsid.broadcast`.
+- `unit: identify active namespace list stamps CNS 02h with starting NSID zero by default`.
+- `unit: identify Cdw10 encodes CNS in bits 7:0 with reserved and controller_id zero on default`.
+- `roundtrip: identify controller encode then Sqe accessors decode opcode nsid cdw10 dptr`.
+- `unit: identify Cdw10 fromRaw round-trips through raw`.
 
 ### Create I/O Completion Queue
 
-- `[znvme]` `unit: create io cq encodes opcode 05h nsid zero and cdw10 qid qsize zero-based`.
-- `[znvme]` `unit: create io cq encodes cdw11 pc 1 ien 0 iv default`.
-- `[znvme]` `unit: create io cq honors interrupts_enabled true and interrupt_vector value`.
-- `[znvme]` `unit: create io cq rejects Qid.admin on qid`.
-- `[znvme]` `unit: create io cq rejects Qid.reserved_max on qid`.
-- `[znvme]` `unit: create io cq rejects queue_size below 2 with InvalidQueueSize`.
-- `[znvme]` `unit: create io cq encodes prp1 from IoQueueBase and prp2 zero`.
-- `[znvme]` `unit: create io cq Cdw10 fromRaw round-trips through raw`.
-- `[znvme]` `unit: create io cq Cdw11 fromRaw round-trips through raw`.
+- `unit: create io cq encodes opcode 05h nsid zero and cdw10 qid qsize zero-based`.
+- `unit: create io cq encodes cdw11 pc 1 ien 0 iv default`.
+- `unit: create io cq honors interrupts_enabled true and interrupt_vector value`.
+- `unit: create io cq rejects Qid.admin on qid`.
+- `unit: create io cq rejects Qid.reserved_max on qid`.
+- `unit: create io cq rejects queue_size below 2 with InvalidQueueSize`.
+- `unit: create io cq encodes prp1 from IoQueueBase and prp2 zero`.
+- `unit: create io cq Cdw10 fromRaw round-trips through raw`.
+- `unit: create io cq Cdw11 fromRaw round-trips through raw`.
 ### Create I/O Submission Queue
 
-- `[znvme]` `unit: create io sq encodes opcode 01h nsid zero and cdw10 qid qsize zero-based`.
-- `[znvme]` `unit: create io sq encodes cdw11 pc 1 priority default medium cqid`.
-- `[znvme]` `unit: create io sq encodes cdw12 nvm_set_id`.
-- `[znvme]` `unit: create io sq honors priority urgent high low`.
-- `[znvme]` `unit: create io sq rejects Qid.admin on qid`.
-- `[znvme]` `unit: create io sq rejects Qid.admin on cqid`.
-- `[znvme]` `unit: create io sq rejects Qid.reserved_max on cqid`.
-- `[znvme]` `unit: create io sq encodes prp1 from IoQueueBase and prp2 zero`.
-- `[znvme]` `unit: create io sq rejects queue_size below 2 with InvalidQueueSize`.
-- `[znvme]` `unit: create io sq Cdw10 fromRaw round-trips through raw`.
-- `[znvme]` `unit: create io sq Cdw11 fromRaw round-trips through raw`.
-- `[znvme]` `unit: create io sq Cdw12 fromRaw round-trips through raw`.
+- `unit: create io sq encodes opcode 01h nsid zero and cdw10 qid qsize zero-based`.
+- `unit: create io sq encodes cdw11 pc 1 priority default medium cqid`.
+- `unit: create io sq encodes cdw12 nvm_set_id`.
+- `unit: create io sq honors priority urgent high low`.
+- `unit: create io sq rejects Qid.admin on qid`.
+- `unit: create io sq rejects Qid.admin on cqid`.
+- `unit: create io sq rejects Qid.reserved_max on cqid`.
+- `unit: create io sq encodes prp1 from IoQueueBase and prp2 zero`.
+- `unit: create io sq rejects queue_size below 2 with InvalidQueueSize`.
+- `unit: create io sq Cdw10 fromRaw round-trips through raw`.
+- `unit: create io sq Cdw11 fromRaw round-trips through raw`.
+- `unit: create io sq Cdw12 fromRaw round-trips through raw`.
 
 ### Delete I/O SQ / CQ
 
-- `[znvme]` `unit: delete io sq encodes opcode 00h and cdw10 qid`.
-- `[znvme]` `unit: delete io cq encodes opcode 04h and cdw10 qid`.
-- `[znvme]` `unit: delete io sq rejects Qid.admin on qid`.
-- `[znvme]` `unit: delete io cq rejects Qid.reserved_max on qid`.
-- `[znvme]` `unit: delete queue Cdw10 fromRaw round-trips through raw`.
+- `unit: delete io sq encodes opcode 00h and cdw10 qid`.
+- `unit: delete io cq encodes opcode 04h and cdw10 qid`.
+- `unit: delete io sq rejects Qid.admin on qid`.
+- `unit: delete io cq rejects Qid.reserved_max on qid`.
+- `unit: delete queue Cdw10 fromRaw round-trips through raw`.
 
 ### Abort
 
-- `[znvme]` `unit: abort encodes opcode 08h nsid zero and cdw10 sqid cid`.
-- `[znvme]` `unit: abort accepts Qid.admin as sqid`.
-- `[znvme]` `unit: abort rejects Qid.reserved_max as sqid`.
-- `[znvme]` `unit: abort Cdw10 fromRaw round-trips through raw`.
+- `unit: abort encodes opcode 08h nsid zero and cdw10 sqid cid`.
+- `unit: abort accepts Qid.admin as sqid`.
+- `unit: abort rejects Qid.reserved_max as sqid`.
+- `unit: abort Cdw10 fromRaw round-trips through raw`.
 
 ### Number of Queues
 
-- `[znvme]` `unit: number of queues set encodes opcode 09h fid 07h save 0`.
-- `[znvme]` `unit: number of queues set encodes cdw11 nsqr ncqr zero-based`.
-- `[znvme]` `unit: number of queues get encodes opcode 0Ah fid 07h select current`.
-- `[znvme]` `unit: number of queues get encodes empty cdw11 zero`.
-- `[znvme]` `unit: number of queues ResponseDw0.fromRaw decodes nsqa ncqa zero-based`.
-- `[znvme]` `unit: number of queues ResponseDw0.allocated maps zero-based to one-based`.
-- `[znvme]` `unit: number of queues set rejects requested submission_queues 0 with InvalidQueueCount`.
-- `[znvme]` `unit: number of queues set rejects requested completion_queues 0 with InvalidQueueCount`.
-- `[znvme]` `unit: number of queues SetCdw10 fromRaw round-trips through raw`.
-- `[znvme]` `unit: number of queues GetCdw10 fromRaw round-trips through raw`.
-- `[znvme]` `unit: number of queues RequestCdw11 fromRaw round-trips through raw`.
+- `unit: number of queues set encodes opcode 09h fid 07h save 0`.
+- `unit: number of queues set encodes cdw11 nsqr ncqr zero-based`.
+- `unit: number of queues get encodes opcode 0Ah fid 07h select current`.
+- `unit: number of queues get encodes empty cdw11 zero`.
+- `unit: number of queues ResponseDw0.fromRaw decodes nsqa ncqa zero-based`.
+- `unit: number of queues ResponseDw0.allocated maps zero-based to one-based`.
+- `unit: number of queues set rejects requested submission_queues 0 with InvalidQueueCount`.
+- `unit: number of queues set rejects requested completion_queues 0 with InvalidQueueCount`.
+- `unit: number of queues SetCdw10 fromRaw round-trips through raw`.
+- `unit: number of queues GetCdw10 fromRaw round-trips through raw`.
+- `unit: number of queues RequestCdw11 fromRaw round-trips through raw`.
 
 ### Roundtrips
 
-- `[znvme]` `roundtrip: create io cq encoded slot decodes through Sqe accessors for cdw10 cdw11 dptr`.
-- `[znvme]` `roundtrip: create io sq encoded slot decodes through Sqe accessors for cdw10 cdw11 cdw12 dptr`.
-- `[znvme]` `roundtrip: number of queues set encoded slot decodes through Sqe accessors for cdw10 cdw11`.
-- `[znvme]` `roundtrip: number of queues fromRaw then allocated one-based round trip` — build a raw `u32`, decode, allocate, assert one-based math.
+- `roundtrip: create io cq encoded slot decodes through Sqe accessors for cdw10 cdw11 dptr`.
+- `roundtrip: create io sq encoded slot decodes through Sqe accessors for cdw10 cdw11 cdw12 dptr`.
+- `roundtrip: number of queues set encoded slot decodes through Sqe accessors for cdw10 cdw11`.
+- `roundtrip: number of queues fromRaw then allocated one-based round trip` — build a raw `u32`, decode, allocate, assert one-based math.
 
 ## Open questions
 

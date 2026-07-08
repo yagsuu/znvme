@@ -27,12 +27,11 @@ znvme depends on `zstdx` for every domain-neutral primitive. The import name is 
 
 ## Spec markers
 
-Every normative claim in a spec carries one marker:
+NVMe-authoritative claims carry `[nvme]`: statements, bullets, tables, or sections derived from the NVMe Base Specification 2.0 or the NVM Command Set Specification 1.0.
 
-- `[nvme]` — mandated by the NVMe Base Specification 2.0 or the NVM Command Set Specification 1.0.
-- `[znvme]` — znvme design choice; the spec justifies it and no external document forces it.
+Unmarked normative claims are znvme design decisions. An unmarked NVMe-authoritative claim is a defect.
 
-An unmarked rule is a defect.
+The project-design marker is retired and should not appear in current specs.
 
 ## Spec ownership
 

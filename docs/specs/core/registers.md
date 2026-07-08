@@ -2,41 +2,41 @@
 
 Status: Approved.
 
-`[znvme]` `ControllerRegisters` is znvme's borrowed view over the NVMe controller MMIO register window. It owns the fixed controller-register block layout, typed register-value wrappers, and accessors for first-slice initialization fields.
+`ControllerRegisters` is znvme's borrowed view over the NVMe controller MMIO register window. It owns the fixed controller-register block layout, typed register-value wrappers, and accessors for first-slice initialization fields.
 
-`[znvme]` The caller owns PCI enumeration, BAR discovery, and MMIO mapping. The caller passes znvme a `[]align(8) volatile u8` window over BAR0/1.
+The caller owns PCI enumeration, BAR discovery, and MMIO mapping. The caller passes znvme a `[]align(8) volatile u8` window over BAR0/1.
 
 ## Owned scope
 
-`[znvme]` This spec owns:
+This spec owns:
 
-- `[znvme]` `ControllerRegisters`, a borrowed controller-register view over caller-owned MMIO bytes;
-- `[znvme]` `RegisterBlock`, an `extern struct` overlay from offset `0x0000` through the start of the doorbell region at `0x1000`;
-- `[znvme]` offset, size, and alignment assertions for the fixed register block;
-- `[znvme]` type-owned size, alignment, and bit-size assertions for `CAP`, `VS`, `CC`, `CSTS`, `AQA`, `ASQ`, and `ACQ` value wrappers;
-- `[znvme]` read methods for `CAP`, `VS`, `CC`, `CSTS`, `AQA`, `ASQ`, and `ACQ`;
-- `[znvme]` write methods for `CAP`, `VS`, `CC`, `CSTS`, `AQA`, `ASQ`, and `ACQ`;
-- `[znvme]` exposure of the underlying `stdx.io.Mmio.Window` for the doorbell spec.
+- `ControllerRegisters`, a borrowed controller-register view over caller-owned MMIO bytes;
+- `RegisterBlock`, an `extern struct` overlay from offset `0x0000` through the start of the doorbell region at `0x1000`;
+- offset, size, and alignment assertions for the fixed register block;
+- type-owned size, alignment, and bit-size assertions for `CAP`, `VS`, `CC`, `CSTS`, `AQA`, `ASQ`, and `ACQ` value wrappers;
+- read methods for `CAP`, `VS`, `CC`, `CSTS`, `AQA`, `ASQ`, and `ACQ`;
+- write methods for `CAP`, `VS`, `CC`, `CSTS`, `AQA`, `ASQ`, and `ACQ`;
+- exposure of the underlying `stdx.io.Mmio.Window` for the doorbell spec.
 
 ## Deferred scope and non-goals
 
-`[znvme]` This spec does not own:
+This spec does not own:
 
-- `[znvme]` SQ/CQ doorbell offset math (`docs/specs/core/doorbell.md`);
-- `[znvme]` controller reset/enable/shutdown sequencing (`docs/specs/controller/init.md`);
-- `[znvme]` interrupt behavior or use of `INTMS` / `INTMC`;
-- `[znvme]` NVM Subsystem Reset behavior through `NSSR`;
-- `[znvme]` Controller Memory Buffer, Persistent Memory Region, boot-partition, NSSD, CRTO, or vendor-specific registers;
-- `[znvme]` generic read-modify-write helpers;
-- `[znvme]` hardware ordering barriers;
-- `[znvme]` PCI/ECAM/BAR discovery or MMIO mapping;
-- `[znvme]` big-endian MMIO compatibility.
+- SQ/CQ doorbell offset math (`docs/specs/core/doorbell.md`);
+- controller reset/enable/shutdown sequencing (`docs/specs/controller/init.md`);
+- interrupt behavior or use of `INTMS` / `INTMC`;
+- NVM Subsystem Reset behavior through `NSSR`;
+- Controller Memory Buffer, Persistent Memory Region, boot-partition, NSSD, CRTO, or vendor-specific registers;
+- generic read-modify-write helpers;
+- hardware ordering barriers;
+- PCI/ECAM/BAR discovery or MMIO mapping;
+- big-endian MMIO compatibility.
 
-`[znvme]` Optional standard registers between `0x0038` and `0x0068` remain reserved padding until a consuming spec promotes them.
+Optional standard registers between `0x0038` and `0x0068` remain reserved padding until a consuming spec promotes them.
 
 ## Register map
 
-`[nvme]` First-slice fixed offsets:
+`[nvme]` Offset, Register, and Width columns transcribe fixed controller-register layout entries:
 
 | Offset | Register | Width | znvme behavior |
 | ---: | --- | ---: | --- |
@@ -54,16 +54,16 @@ Status: Approved.
 | `0x0038..0x0fff` | reserved / optional registers | byte padding | not surfaced |
 | `0x1000` | doorbell region start | dynamic | exposed to `doorbell.md` via `mmioWindow()` |
 
-`[znvme]` The fixed overlay ends exactly at `0x1000`. Doorbell registers are not embedded in `RegisterBlock`; their offsets depend on `CAP.DSTRD` and queue identity.
+The fixed overlay ends exactly at `0x1000`. Doorbell registers are not embedded in `RegisterBlock`; their offsets depend on `CAP.DSTRD` and queue identity.
 
 ## stdx composition
 
-- `[znvme]` `RegisterBlock` uses `stdx.io.Mmio.Register(u32)` and `stdx.io.Mmio.Register(u64)` lanes.
-- `[znvme]` `ControllerRegisters` stores a `stdx.io.Mmio.Window` so `core/doorbell.zig` can request runtime-computed `u32` doorbell lanes.
-- `[znvme]` `QueueBase.fromDmaAddr` consumes `stdx.addr.DmaAddr`; no physical-address type appears in znvme's register API.
-- `[znvme]` `stdx.barrier.mmio.*` is not called here. Ordering belongs to the controller-init and doorbell specs that know the protocol transition.
+- `RegisterBlock` uses `stdx.io.Mmio.Register(u32)` and `stdx.io.Mmio.Register(u64)` lanes.
+- `ControllerRegisters` stores a `stdx.io.Mmio.Window` so `core/doorbell.zig` can request runtime-computed `u32` doorbell lanes.
+- `QueueBase.fromDmaAddr` consumes `stdx.addr.DmaAddr`; no physical-address type appears in znvme's register API.
+- `stdx.barrier.mmio.*` is not called here. Ordering belongs to the controller-init and doorbell specs that know the protocol transition.
 
-`[znvme]` `stdx.io.Mmio.Register` access provides volatile compiler ordering only. It does not emit ISA fences and does not order DMA payloads by itself.
+`stdx.io.Mmio.Register` access provides volatile compiler ordering only. It does not emit ISA fences and does not order DMA payloads by itself.
 
 ## Approved API
 
@@ -477,7 +477,7 @@ pub const QueueBase = packed struct(u64) {
 | `NSSS` | `58` | NVM Subsystem Shutdown supported |
 | `CRMS` | `60:59` | Controller Ready Modes supported |
 
-`[znvme]` First-slice behavior consumes `MQES`, `CQR`, `TO`, `DSTRD`, `CSS`, `MPSMIN`, and `MPSMAX`. Other fields are decoded and preserved but do not enable behavior by themselves.
+First-slice behavior consumes `MQES`, `CQR`, `TO`, `DSTRD`, `CSS`, `MPSMIN`, and `MPSMAX`. Other fields are decoded and preserved but do not enable behavior by themselves.
 
 ### `VS` — Version
 
@@ -485,7 +485,7 @@ pub const QueueBase = packed struct(u64) {
 
 ### `CC` — Controller Configuration
 
-`[nvme]` `CC` fields:
+`[nvme]` Field and Bits columns transcribe `CC` fields:
 
 | Field | Bits | znvme first-slice value |
 | --- | --- | --- |
@@ -498,7 +498,7 @@ pub const QueueBase = packed struct(u64) {
 | `IOCQES` | `23:20` | `4` (`2^4 = 16` byte CQE) |
 | `CRIME` | `24` | `0` in the first slice |
 
-`[znvme]` `Cc.nvmEnabled(mps)` constructs the complete enabled NVM value. Controller init validates `mps` against `CAP`, then writes through `storeCc`.
+`Cc.nvmEnabled(mps)` constructs the complete enabled NVM value. Controller init validates `mps` against `CAP`, then writes through `storeCc`.
 
 ### `CSTS` — Controller Status
 
@@ -513,80 +513,80 @@ pub const QueueBase = packed struct(u64) {
 | `PP` | `5` | Processing paused |
 | `ST` | `6` | Shutdown type |
 
-`[znvme]` Controller init owns polling and timeout behavior around `RDY`, `CFS`, and `SHST`.
+Controller init owns polling and timeout behavior around `RDY`, `CFS`, and `SHST`.
 
 ### `AQA` — Admin Queue Attributes
 
 `[nvme]` `ASQS` bits `11:0` and `ACQS` bits `27:16` encode admin submission/completion queue depths as zero-based values.
 
-`[znvme]` `Aqa.fromDepths(.{ .submission_entries = 1, .completion_entries = 1 })` encodes both fields as `0`. `Aqa.fromDepths(.{ .submission_entries = 4096, .completion_entries = 4096 })` encodes both fields as `0xfff`.
+`Aqa.fromDepths(.{ .submission_entries = 1, .completion_entries = 1 })` encodes both fields as `0`. `Aqa.fromDepths(.{ .submission_entries = 4096, .completion_entries = 4096 })` encodes both fields as `0xfff`.
 
 ### `ASQ` / `ACQ` — Admin Queue Base Address
 
 `[nvme]` Bits `11:0` are reserved zero. Bits `63:12` hold the admin queue base address.
 
-`[znvme]` `QueueBase.fromDmaAddr` enforces 4 KiB alignment. Any stronger page-size policy derived from `CC.MPS` is owned by controller init.
+`QueueBase.fromDmaAddr` enforces 4 KiB alignment. Any stronger page-size policy derived from `CC.MPS` is owned by controller init.
 
 ## Access and ordering rules
 
-`[znvme]` `ControllerRegisters.at` borrows the caller's BAR mapping and performs no device access.
+`ControllerRegisters.at` borrows the caller's BAR mapping and performs no device access.
 
-`[znvme]` All write methods write complete register values; no method performs a read-modify-write operation.
+All write methods write complete register values; no method performs a read-modify-write operation.
 
-`[znvme]` `storeCap`, `storeVersion`, `storeCc`, `storeCsts`, `storeAqa`, `storeAsq`, and `storeAcq` do not emit barriers. The caller spec must place barriers around register access when required by the NVMe transition being implemented.
+`storeCap`, `storeVersion`, `storeCc`, `storeCsts`, `storeAqa`, `storeAsq`, and `storeAcq` do not emit barriers. The caller spec must place barriers around register access when required by the NVMe transition being implemented.
 
-`[znvme]` `ControllerRegisters` exposes symmetric read and write accessors on every named register in the fixed block. The type does not police NVMe's per-register R/W attribute — that lives with the consumer role:
+`ControllerRegisters` exposes symmetric read and write accessors on every named register in the fixed block. The type does not police NVMe's per-register R/W attribute — that lives with the consumer role:
 
-- `[znvme]` **Host driver.** Uses `cap`, `version`, `csts`, `aqa`, `asq`, `acq` as reads and `cc`, `aqa`, `asq`, `acq` as writes during controller enable. Never calls `storeCap`, `storeVersion`, or `storeCsts`.
-- `[znvme]` **Device emulator.** Publishes controller-authored register state through `storeCap`, `storeVersion`, `storeCsts`, and (as replay) `storeCc`; observes host writes to `CC`, `AQA`, `ASQ`, `ACQ` through the reader accessors.
+- **Host driver.** Uses `cap`, `version`, `csts`, `aqa`, `asq`, `acq` as reads and `cc`, `aqa`, `asq`, `acq` as writes during controller enable. Never calls `storeCap`, `storeVersion`, or `storeCsts`.
+- **Device emulator.** Publishes controller-authored register state through `storeCap`, `storeVersion`, `storeCsts`, and (as replay) `storeCc`; observes host writes to `CC`, `AQA`, `ASQ`, `ACQ` through the reader accessors.
 
-`[znvme]` The same MMIO window backs both roles; ordering and cache attributes belong to the caller's mapping.
+The same MMIO window backs both roles; ordering and cache attributes belong to the caller's mapping.
 
-`[znvme]` Direct use of `RegisterBlock` fields outside `core/registers.zig` is a defect. Callers use only `ControllerRegisters` methods approved by this spec or by the spec that owns a new accessor before that accessor lands.
+Direct use of `RegisterBlock` fields outside `core/registers.zig` is a defect. Callers use only `ControllerRegisters` methods approved by this spec or by the spec that owns a new accessor before that accessor lands.
 
 ## Validation behavior
 
-- `[znvme]` `ControllerRegisters.at` rejects windows shorter than `0x1000`.
-- `[znvme]` `Aqa.fromDepths` rejects zero queue depths and depths above 4096 entries.
-- `[znvme]` `QueueBase.fromDmaAddr` rejects addresses with any low 12 bits set.
-- `[znvme]` `Cap`, `Version`, `Cc`, and `Csts` decode every raw bit pattern; reserved bits are preserved.
-- `[znvme]` `Cc.nvmEnabled` does not validate `mps`; controller init validates `mps` against `Cap` before constructing the enabled value.
+- `ControllerRegisters.at` rejects windows shorter than `0x1000`.
+- `Aqa.fromDepths` rejects zero queue depths and depths above 4096 entries.
+- `QueueBase.fromDmaAddr` rejects addresses with any low 12 bits set.
+- `Cap`, `Version`, `Cc`, and `Csts` decode every raw bit pattern; reserved bits are preserved.
+- `Cc.nvmEnabled` does not validate `mps`; controller init validates `mps` against `Cap` before constructing the enabled value.
 
 ## Behavior contract
 
 | Operation | Allocation | Waiting | Bounds | Concurrency | Ordering | Errors |
 | --- | --- | --- | --- | --- | --- | --- |
-| `[znvme]` `ControllerRegisters.at` | never | never | O(1) length check | borrowed value | none | `OutOfBounds` |
-| `[znvme]` `mmioWindow` | never | never | O(1) | value copy | none | infallible |
-| `[znvme]` register read methods | never | never | O(1) | caller-serialized per register | volatile load only | infallible |
-| `[znvme]` register write methods | never | never | O(1) | caller-serialized per register | volatile store only | infallible |
-| `[znvme]` value `fromRaw` / `raw` | never | never | O(1) | value type | none | infallible |
-| `[znvme]` `Aqa.fromDepths` | never | never | O(1) | value type | none | `QueueDepthOutOfRange` |
-| `[znvme]` `QueueBase.fromDmaAddr` | never | never | O(1) | value type | none | `Misaligned` |
+| `ControllerRegisters.at` | never | never | O(1) length check | borrowed value | none | `OutOfBounds` |
+| `mmioWindow` | never | never | O(1) | value copy | none | infallible |
+| register read methods | never | never | O(1) | caller-serialized per register | volatile load only | infallible |
+| register write methods | never | never | O(1) | caller-serialized per register | volatile store only | infallible |
+| value `fromRaw` / `raw` | never | never | O(1) | value type | none | infallible |
+| `Aqa.fromDepths` | never | never | O(1) | value type | none | `QueueDepthOutOfRange` |
+| `QueueBase.fromDmaAddr` | never | never | O(1) | value type | none | `Misaligned` |
 
-## Required tests `[znvme]`
+## Required tests
 
-`[znvme]` Test file `test/core/registers_test.zig`. Naming per `docs/guidelines/testing.md`.
+Test file `test/core/registers_test.zig`. Naming per `docs/guidelines/testing.md`.
 
-- `[znvme]` `unit: registers block offsets match NVMe controller properties`.
-- `[znvme]` `unit: registers block size ends at doorbell base`.
-- `[znvme]` `unit: registers at rejects short BAR window`.
-- `[znvme]` `unit: cap decodes queue entries timeout doorbell stride and page sizes`.
-- `[znvme]` `unit: cap detects NVM command set support`.
-- `[znvme]` `unit: version decodes major minor tertiary`.
-- `[znvme]` `unit: cc nvm enabled encodes NVM CSS and queue entry sizes`.
-- `[znvme]` `unit: cc shutdown notification updates only SHN`.
-- `[znvme]` `unit: csts decodes ready fatal and shutdown status`.
-- `[znvme]` `unit: aqa encodes named one-based depths as zero-based fields`.
-- `[znvme]` `unit: aqa rejects zero and too-large depths`.
-- `[znvme]` `unit: queue base rejects unaligned DMA address`.
-- `[znvme]` `unit: queue base roundtrips aligned DMA address`.
-- `[znvme]` `unit: controller registers storeCap writes CAP through the mmio window and cap reads it back`.
-- `[znvme]` `unit: controller registers storeVersion writes VS and version reads it back`.
-- `[znvme]` `unit: controller registers storeCsts writes CSTS and csts reads it back`.
-- `[znvme]` `unit: controller registers aqa reads back what storeAqa wrote`.
-- `[znvme]` `unit: controller registers asq reads back what storeAsq wrote`.
-- `[znvme]` `unit: controller registers acq reads back what storeAcq wrote`.
+- `unit: registers block offsets match NVMe controller properties`.
+- `unit: registers block size ends at doorbell base`.
+- `unit: registers at rejects short BAR window`.
+- `unit: cap decodes queue entries timeout doorbell stride and page sizes`.
+- `unit: cap detects NVM command set support`.
+- `unit: version decodes major minor tertiary`.
+- `unit: cc nvm enabled encodes NVM CSS and queue entry sizes`.
+- `unit: cc shutdown notification updates only SHN`.
+- `unit: csts decodes ready fatal and shutdown status`.
+- `unit: aqa encodes named one-based depths as zero-based fields`.
+- `unit: aqa rejects zero and too-large depths`.
+- `unit: queue base rejects unaligned DMA address`.
+- `unit: queue base roundtrips aligned DMA address`.
+- `unit: controller registers storeCap writes CAP through the mmio window and cap reads it back`.
+- `unit: controller registers storeVersion writes VS and version reads it back`.
+- `unit: controller registers storeCsts writes CSTS and csts reads it back`.
+- `unit: controller registers aqa reads back what storeAqa wrote`.
+- `unit: controller registers asq reads back what storeAsq wrote`.
+- `unit: controller registers acq reads back what storeAcq wrote`.
 
 ## Open questions
 

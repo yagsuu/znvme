@@ -4,102 +4,102 @@ Status: Approved.
 
 `[nvme]` The NVMe Completion Queue Entry (CQE) contains a 16-bit Status lane with phase tag, Status Code (`SC`), Status Code Type (`SCT`), Command Retry Delay (`CRD`) index, More (`M`), and Do Not Retry (`DNR`) bits.
 
-`[znvme]` `CompletionStatus` decodes that native status lane into a semantic value exposing those fields.
+`CompletionStatus` decodes that native status lane into a semantic value exposing those fields.
 
-`[znvme]` This spec owns the status value taxonomy. The 16-byte CQE wire layout is owned by `docs/specs/commands/cqe.md`; queue phase tracking is owned by `docs/specs/controller/queue.md`.
+This spec owns the status value taxonomy. The 16-byte CQE wire layout is owned by `docs/specs/commands/cqe.md`; queue phase tracking is owned by `docs/specs/controller/queue.md`.
 
-`[znvme]` In the first slice, the owning CQE wire view reads the little-endian status lane as a native `u16` on the required little-endian target before calling `CompletionStatus.from(...)`. Big-endian host/target compatibility does not land until an approved spec updates the owning wire views and this boundary.
+In the first slice, the owning CQE wire view reads the little-endian status lane as a native `u16` on the required little-endian target before calling `CompletionStatus.from(...)`. Big-endian host/target compatibility does not land until an approved spec updates the owning wire views and this boundary.
 
 ## Owned scope
 
-`[znvme]` This spec owns:
+This spec owns:
 
-- `[znvme]` the CQE Status lane bit layout;
-- `[znvme]` `CompletionStatus` semantic wrapper;
-- `[znvme]` `CodeType`, `RetryDelay`, and `GenericCode` enums;
-- `[znvme]` `Kind` and `Failure` taxonomy values;
-- `[znvme]` raw round-trip and field accessors;
-- `[znvme]` success/failure classification.
+- the CQE Status lane bit layout;
+- `CompletionStatus` semantic wrapper;
+- `CodeType`, `RetryDelay`, and `GenericCode` enums;
+- `Kind` and `Failure` taxonomy values;
+- raw round-trip and field accessors;
+- success/failure classification.
 
 ## Deferred scope and non-goals
 
-`[znvme]` This spec does not own:
+This spec does not own:
 
-- `[znvme]` the CQE's 16-byte wire layout or field offsets (`docs/specs/commands/cqe.md`);
-- `[znvme]` queue phase validation (`docs/specs/controller/queue.md`);
-- `[znvme]` automatic retry policy based on `CRD` or `DNR`;
-- `[znvme]` Error Information log retrieval when `M = 1`;
-- `[znvme]` exhaustive command-specific, media/data-integrity, path-related, or vendor-specific code names;
-- `[znvme]` big-endian host or target support.
+- the CQE's 16-byte wire layout or field offsets (`docs/specs/commands/cqe.md`);
+- queue phase validation (`docs/specs/controller/queue.md`);
+- automatic retry policy based on `CRD` or `DNR`;
+- Error Information log retrieval when `M = 1`;
+- exhaustive command-specific, media/data-integrity, path-related, or vendor-specific code names;
+- big-endian host or target support.
 
-`[znvme]` Command-set specs add helper classifiers only for their own status-code domains; helper classifiers do not change `CompletionStatus`.
+Command-set specs add helper classifiers only for their own status-code domains; helper classifiers do not change `CompletionStatus`.
 
 ## Bit layout
 
 `[nvme]` NVMe CQE Status lane layout, least-significant bit first:
 
-| Marker | Bits | Width | Field | Meaning |
-| --- | --- | ---: | --- | --- |
-| `[nvme]` | `0` | 1 | `P` | Phase Tag |
-| `[nvme]` | `1..8` | 8 | `SC` | Status Code |
-| `[nvme]` | `9..11` | 3 | `SCT` | Status Code Type |
-| `[nvme]` | `12..13` | 2 | `CRD` | Command Retry Delay index |
-| `[nvme]` | `14` | 1 | `M` | More status information available |
-| `[nvme]` | `15` | 1 | `DNR` | Do Not Retry |
+| Bits | Width | Field | Meaning |
+| --- | ---: | --- | --- |
+| `0` | 1 | `P` | Phase Tag |
+| `1..8` | 8 | `SC` | Status Code |
+| `9..11` | 3 | `SCT` | Status Code Type |
+| `12..13` | 2 | `CRD` | Command Retry Delay index |
+| `14` | 1 | `M` | More status information available |
+| `15` | 1 | `DNR` | Do Not Retry |
 
-`[znvme]` In the first slice, the owning CQE wire view reads the little-endian lane as native `u16` before calling `CompletionStatus.from`.
+In the first slice, the owning CQE wire view reads the little-endian lane as native `u16` before calling `CompletionStatus.from`.
 
 ## Status Code Type
 
-| Marker | Raw | Name | Meaning |
-| --- | ---: | --- | --- |
-| `[nvme]` | `0h` | `generic` | Generic status codes applicable to multiple opcodes |
-| `[nvme]` | `1h` | `command_specific` | Status code depends on the submitted command or command set |
-| `[nvme]` | `2h` | `media_data_integrity` | Media and data-integrity errors |
-| `[nvme]` | `3h` | `path_related` | Path-related errors |
-| `[nvme]` | `4h..6h` | reserved | Representable, not named |
-| `[nvme]` | `7h` | `vendor_specific` | Vendor-specific status code |
+| Raw | Name | Meaning |
+| ---: | --- | --- |
+| `0h` | `generic` | Generic status codes applicable to multiple opcodes |
+| `1h` | `command_specific` | Status code depends on the submitted command or command set |
+| `2h` | `media_data_integrity` | Media and data-integrity errors |
+| `3h` | `path_related` | Path-related errors |
+| `4h..6h` | reserved | Representable, not named |
+| `7h` | `vendor_specific` | Vendor-specific status code |
 
-`[znvme]` Reserved `SCT` values are decoded as `.reserved_code_type = raw_sct` in `Kind`; they are not rejected.
+Reserved `SCT` values are decoded as `.reserved_code_type = raw_sct` in `Kind`; they are not rejected.
 
 ## Generic status codes
 
-`[znvme]` This spec names the Generic Command Status codes needed by the first slice and by common debugging. The enum is non-exhaustive; unknown Generic codes remain representable.
+This spec names the Generic Command Status codes needed by the first slice and by common debugging. The enum is non-exhaustive; unknown Generic codes remain representable.
 
-| Marker | Raw | Name |
-| --- | ---: | --- |
-| `[nvme]` | `00h` | `success` |
-| `[nvme]` | `01h` | `invalid_command_opcode` |
-| `[nvme]` | `02h` | `invalid_field` |
-| `[nvme]` | `03h` | `command_id_conflict` |
-| `[nvme]` | `04h` | `data_transfer_error` |
-| `[nvme]` | `05h` | `commands_aborted_power_loss` |
-| `[nvme]` | `06h` | `internal_error` |
-| `[nvme]` | `07h` | `command_abort_requested` |
-| `[nvme]` | `08h` | `command_aborted_sq_deletion` |
-| `[nvme]` | `09h` | `fused_command_failed` |
-| `[nvme]` | `0Ah` | `fused_command_missing` |
-| `[nvme]` | `0Bh` | `invalid_namespace_or_format` |
-| `[nvme]` | `0Ch` | `command_sequence_error` |
-| `[nvme]` | `0Dh` | `invalid_sgl_segment_descriptor` |
-| `[nvme]` | `0Eh` | `invalid_number_sgl_descriptors` |
-| `[nvme]` | `0Fh` | `data_sgl_length_invalid` |
-| `[nvme]` | `10h` | `metadata_sgl_length_invalid` |
-| `[nvme]` | `11h` | `sgl_descriptor_type_invalid` |
-| `[nvme]` | `12h` | `invalid_use_controller_memory_buffer` |
-| `[nvme]` | `13h` | `prp_offset_invalid` |
+| Raw | Name |
+| ---: | --- |
+| `00h` | `success` |
+| `01h` | `invalid_command_opcode` |
+| `02h` | `invalid_field` |
+| `03h` | `command_id_conflict` |
+| `04h` | `data_transfer_error` |
+| `05h` | `commands_aborted_power_loss` |
+| `06h` | `internal_error` |
+| `07h` | `command_abort_requested` |
+| `08h` | `command_aborted_sq_deletion` |
+| `09h` | `fused_command_failed` |
+| `0Ah` | `fused_command_missing` |
+| `0Bh` | `invalid_namespace_or_format` |
+| `0Ch` | `command_sequence_error` |
+| `0Dh` | `invalid_sgl_segment_descriptor` |
+| `0Eh` | `invalid_number_sgl_descriptors` |
+| `0Fh` | `data_sgl_length_invalid` |
+| `10h` | `metadata_sgl_length_invalid` |
+| `11h` | `sgl_descriptor_type_invalid` |
+| `12h` | `invalid_use_controller_memory_buffer` |
+| `13h` | `prp_offset_invalid` |
 
-`[znvme]` Command-specific, media/data-integrity, path-related, and vendor-specific status-code names are deliberately not introduced here. The raw `u8` is preserved until the owning command-set spec needs a named interpretation.
+Command-specific, media/data-integrity, path-related, and vendor-specific status-code names are deliberately not introduced here. The raw `u8` is preserved until the owning command-set spec needs a named interpretation.
 
 ## znvme behavior
 
-`[znvme]` `CompletionStatus.init(params)` composes a semantic status value from `Init` fields `phase`, `code_type`, `code`, `retry_delay`, `more`, and `do_not_retry`. `CompletionStatus.success(phase)` and `CompletionStatus.genericFailure(phase, code)` are shortcuts for the two common fixture shapes. These constructors exist for device-emulator fixtures and test authoring; the polling loop still consumes device-authored bytes through `CompletionStatus.from`.
+`CompletionStatus.init(params)` composes a semantic status value from `Init` fields `phase`, `code_type`, `code`, `retry_delay`, `more`, and `do_not_retry`. `CompletionStatus.success(phase)` and `CompletionStatus.genericFailure(phase, code)` are shortcuts for the two common fixture shapes. These constructors exist for device-emulator fixtures and test authoring; the polling loop still consumes device-authored bytes through `CompletionStatus.from`.
 
-`[znvme]` `CompletionStatus.init(params).raw()` fed back through `CompletionStatus.from` reproduces the same accessor values; the builders are decode-symmetric.
+`CompletionStatus.init(params).raw()` fed back through `CompletionStatus.from` reproduces the same accessor values; the builders are decode-symmetric.
 
 ## Approved API
 
-`[znvme]` The approved public API shape is:
+The approved public API shape is:
 
 ```zig
 // src/core/status.zig
@@ -296,53 +296,53 @@ pub const CompletionStatus = struct {
 
 ## Boundary rule
 
-`[znvme]` `CompletionStatus` is a semantic host value. The CQE wire view owns loading the status lane from CQE bytes. In the first slice, that load is native little-endian on the required target; big-endian portability does not land until an approved CQE/status endian spec exists.
+`CompletionStatus` is a semantic host value. The CQE wire view owns loading the status lane from CQE bytes. In the first slice, that load is native little-endian on the required target; big-endian portability does not land until an approved CQE/status endian spec exists.
 
-`[znvme]` The queue owns phase matching. A status whose `phase()` does not equal the queue's expected phase is not a failed command; it is an empty/not-yet-posted CQ slot for that queue pass. `CompletionStatus.isSuccess()` is phase-agnostic: it returns `true` iff the status field decodes to `codeType == .generic` and `code == GenericCode.success`. An all-zero status lane (unposted slot) therefore has `isSuccess() == true` when viewed through `CompletionStatus` alone; posted-vs-not-posted is a queue-level predicate exposed by `Cqe.isPostedSuccess` and pre-checked before `queue.Completion` is returned to callers.
+The queue owns phase matching. A status whose `phase()` does not equal the queue's expected phase is not a failed command; it is an empty/not-yet-posted CQ slot for that queue pass. `CompletionStatus.isSuccess()` is phase-agnostic: it returns `true` iff the status field decodes to `codeType == .generic` and `code == GenericCode.success`. An all-zero status lane (unposted slot) therefore has `isSuccess() == true` when viewed through `CompletionStatus` alone; posted-vs-not-posted is a queue-level predicate exposed by `Cqe.isPostedSuccess` and pre-checked before `queue.Completion` is returned to callers.
 
 ## Validation behavior
 
-`[znvme]` No `validate` method exists. Every `u16` lane is representable:
+No `validate` method exists. Every `u16` lane is representable:
 
-- `[znvme]` reserved `SCT` values are preserved as `.reserved_code_type`;
-- `[znvme]` unknown Generic codes are preserved by the non-exhaustive `GenericCode` enum;
-- `[znvme]` command-specific, media/data-integrity, path-related, and vendor-specific codes are preserved as raw `u8`;
-- `[znvme]` `CRD`, `M`, and `DNR` are decoded even when paired with success or reserved types.
+- reserved `SCT` values are preserved as `.reserved_code_type`;
+- unknown Generic codes are preserved by the non-exhaustive `GenericCode` enum;
+- command-specific, media/data-integrity, path-related, and vendor-specific codes are preserved as raw `u8`;
+- `CRD`, `M`, and `DNR` are decoded even when paired with success or reserved types.
 
-`[znvme]` This module decodes device output. It does not reject device output.
+This module decodes device output. It does not reject device output.
 
 ## Behavior contract
 
 | Operation | Allocation | Waiting | Bounds | Concurrency | Ordering | Errors |
 | --- | --- | --- | --- | --- | --- | --- |
-| `[znvme]` `CompletionStatus.from` | never | never | O(1) | value type | none | infallible |
-| `[znvme]` `raw` | never | never | O(1) | value type | none | infallible |
-| `[znvme]` scalar accessors (`phase`, `code`, `codeType`, `retryDelay`, `hasMore`, `doNotRetry`) | never | never | O(1) | value type | none | infallible |
-| `[znvme]` `isSuccess` | never | never | O(1) | value type | none | infallible |
-| `[znvme]` `kind` | never | never | O(1) | value type | none | infallible |
-| `[znvme]` `failure` | never | never | O(1) | value type | none | infallible |
-| `[znvme]` `init` / `success` / `genericFailure` | never | never | O(1) | value type | none | infallible |
+| `CompletionStatus.from` | never | never | O(1) | value type | none | infallible |
+| `raw` | never | never | O(1) | value type | none | infallible |
+| scalar accessors (`phase`, `code`, `codeType`, `retryDelay`, `hasMore`, `doNotRetry`) | never | never | O(1) | value type | none | infallible |
+| `isSuccess` | never | never | O(1) | value type | none | infallible |
+| `kind` | never | never | O(1) | value type | none | infallible |
+| `failure` | never | never | O(1) | value type | none | infallible |
+| `init` / `success` / `genericFailure` | never | never | O(1) | value type | none | infallible |
 
-`[znvme]` Every operation is a pure value operation. No allocation, hidden global state, target probing, barriers, volatile access, or I/O.
+Every operation is a pure value operation. No allocation, hidden global state, target probing, barriers, volatile access, or I/O.
 
-## Required tests `[znvme]`
+## Required tests
 
-`[znvme]` Test file `test/core/status_test.zig`. Naming per `docs/guidelines/testing.md`.
+Test file `test/core/status_test.zig`. Naming per `docs/guidelines/testing.md`.
 
-- `[znvme]` `unit: status decodes success with phase one` — `CompletionStatus.from(0x0001)` decodes phase `true`, success, `failure() == null`.
-- `[znvme]` `unit: status decodes generic invalid field` — `CompletionStatus.from(raw)` with phase set, SCT generic, and SC invalid_field yields `failure().kind.generic == .invalid_field`.
-- `[znvme]` `unit: status decodes command specific raw code` — `CompletionStatus.from(raw)` with SCT command_specific and SC `0x02` yields `failure().kind.command_specific == 0x02`.
-- `[znvme]` `unit: status decodes media and path raw codes` — raw codes preserved under `.media_data_integrity` and `.path_related`.
-- `[znvme]` `unit: status decodes vendor specific raw code` — raw code preserved under `.vendor_specific`.
-- `[znvme]` `unit: status preserves reserved code type` — SCT `4`, `5`, or `6` yields `.reserved_code_type`.
-- `[znvme]` `unit: status decodes retry delay more and do-not-retry` — CRD `2`, M `1`, DNR `1` decode to `.crdt2`, `true`, `true`.
-- `[znvme]` `unit: status raw roundtrip preserves all bits` — every tested lane value constructed with `CompletionStatus.from` returns from `raw()` unchanged.
-- `[znvme]` `unit: completion status isSuccess returns true for all-zero status field regardless of phase bit` — asserts the phase-agnostic contract; a `0x0000` lane decodes to generic-success even though its phase bit is clear.
-- `[znvme]` `unit: CompletionStatus.init round-trips through raw and from` — every builder-produced value equals `CompletionStatus.from(built.raw())` on every accessor.
-- `[znvme]` `unit: CompletionStatus.success(phase) returns a generic-success value with the given phase bit`.
-- `[znvme]` `unit: CompletionStatus.genericFailure(phase, code) sets code_type generic and preserves phase and code`.
+- `unit: status decodes success with phase one` — `CompletionStatus.from(0x0001)` decodes phase `true`, success, `failure() == null`.
+- `unit: status decodes generic invalid field` — `CompletionStatus.from(raw)` with phase set, SCT generic, and SC invalid_field yields `failure().kind.generic == .invalid_field`.
+- `unit: status decodes command specific raw code` — `CompletionStatus.from(raw)` with SCT command_specific and SC `0x02` yields `failure().kind.command_specific == 0x02`.
+- `unit: status decodes media and path raw codes` — raw codes preserved under `.media_data_integrity` and `.path_related`.
+- `unit: status decodes vendor specific raw code` — raw code preserved under `.vendor_specific`.
+- `unit: status preserves reserved code type` — SCT `4`, `5`, or `6` yields `.reserved_code_type`.
+- `unit: status decodes retry delay more and do-not-retry` — CRD `2`, M `1`, DNR `1` decode to `.crdt2`, `true`, `true`.
+- `unit: status raw roundtrip preserves all bits` — every tested lane value constructed with `CompletionStatus.from` returns from `raw()` unchanged.
+- `unit: completion status isSuccess returns true for all-zero status field regardless of phase bit` — asserts the phase-agnostic contract; a `0x0000` lane decodes to generic-success even though its phase bit is clear.
+- `unit: CompletionStatus.init round-trips through raw and from` — every builder-produced value equals `CompletionStatus.from(built.raw())` on every accessor.
+- `unit: CompletionStatus.success(phase) returns a generic-success value with the given phase bit`.
+- `unit: CompletionStatus.genericFailure(phase, code) sets code_type generic and preserves phase and code`.
 
-`[znvme]` Round-trip through a CQE byte fixture is owned by `docs/specs/commands/cqe.md`.
+Round-trip through a CQE byte fixture is owned by `docs/specs/commands/cqe.md`.
 
 ## Open questions
 

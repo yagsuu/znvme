@@ -2,38 +2,38 @@
 
 Status: Approved.
 
-`[znvme]` `PrpEntry`, `DataPointers`, `PageSize`, `PrpList`, and contiguous PRP construction own the PRP1/PRP2 data-pointer shape used by NVMe commands. This spec covers descriptor construction only: caller-owned DMA memory goes in, PRP data-pointer lanes and optional PRP-list entries come out.
+`PrpEntry`, `DataPointers`, `PageSize`, `PrpList`, and contiguous PRP construction own the PRP1/PRP2 data-pointer shape used by NVMe commands. This spec covers descriptor construction only: caller-owned DMA memory goes in, PRP data-pointer lanes and optional PRP-list entries come out.
 
-`[znvme]` PRP construction never allocates, maps, pins, flushes, invalidates, rings a doorbell, or chooses a command opcode. It composes `stdx.dma.Buffer(T)` and `stdx.addr.DmaAddr` from `docs/specs/core/dma.md`.
+PRP construction never allocates, maps, pins, flushes, invalidates, rings a doorbell, or chooses a command opcode. It composes `stdx.dma.Buffer(T)` and `stdx.addr.DmaAddr` from `docs/specs/core/dma.md`.
 
 ## Owned scope
 
-`[znvme]` This spec owns:
+This spec owns:
 
-- `[znvme]` `PrpEntry`, the 64-bit PRP wire lane;
-- `[znvme]` `DataPointers`, the `PRP1` / `PRP2` pair embedded by SQE data-transfer command layouts;
-- `[znvme]` `IoQueueBase`, the single page-aligned queue-base DMA pointer for Create I/O SQ/CQ with `PC=1`;
-- `[znvme]` `PageSize`, the validated memory-page size consumed by PRP construction;
-- `[znvme]` `PrpList`, caller-owned PRP-list storage backed by `stdx.dma.Buffer(PrpEntry)`;
-- `[znvme]` contiguous payload PRP construction from `stdx.dma.Buffer(u8)`;
-- `[znvme]` PRP-list entry emission for payloads that cross more than one page boundary after `PRP1`;
-- `[znvme]` validation and error taxonomy for descriptor-construction failures;
-- `[znvme]` first-slice limit of one PRP-list page.
+- `PrpEntry`, the 64-bit PRP wire lane;
+- `DataPointers`, the `PRP1` / `PRP2` pair embedded by SQE data-transfer command layouts;
+- `IoQueueBase`, the single page-aligned queue-base DMA pointer for Create I/O SQ/CQ with `PC=1`;
+- `PageSize`, the validated memory-page size consumed by PRP construction;
+- `PrpList`, caller-owned PRP-list storage backed by `stdx.dma.Buffer(PrpEntry)`;
+- contiguous payload PRP construction from `stdx.dma.Buffer(u8)`;
+- PRP-list entry emission for payloads that cross more than one page boundary after `PRP1`;
+- validation and error taxonomy for descriptor-construction failures;
+- first-slice limit of one PRP-list page.
 
 ## Deferred scope and non-goals
 
-`[znvme]` This spec does not own:
+This spec does not own:
 
-- `[znvme]` SQE layout, PRP field offsets, or command dword layout (`docs/specs/commands/sqe.md`);
-- `[znvme]` command-specific transfer length, data direction, opcode legality, or namespace policy;
-- `[znvme]` metadata pointer (`MPTR`) construction;
-- `[znvme]` SGL descriptors or SGL-vs-PRP selection;
-- `[znvme]` scatter-gather payload input;
-- `[znvme]` DMA allocation, mapping, pinning, IOMMU policy, bounce buffers, or cache maintenance;
-- `[znvme]` queue barriers, doorbell ordering, or command submission;
-- `[znvme]` Maximum Data Transfer Size (`MDTS`) policy;
-- `[znvme]` chained PRP-list pages;
-- `[znvme]` big-endian host or target support.
+- SQE layout, PRP field offsets, or command dword layout (`docs/specs/commands/sqe.md`);
+- command-specific transfer length, data direction, opcode legality, or namespace policy;
+- metadata pointer (`MPTR`) construction;
+- SGL descriptors or SGL-vs-PRP selection;
+- scatter-gather payload input;
+- DMA allocation, mapping, pinning, IOMMU policy, bounce buffers, or cache maintenance;
+- queue barriers, doorbell ordering, or command submission;
+- Maximum Data Transfer Size (`MDTS`) policy;
+- chained PRP-list pages;
+- big-endian host or target support.
 
 ## NVMe behavior
 
@@ -55,63 +55,63 @@ Status: Approved.
 
 ## znvme behavior
 
-`[znvme]` `PrpEntry` stores the PRP lane as a native `u64` on the first-slice little-endian target. Wire encoding writes `stdx.addr.DmaAddr.raw()` into that field; it never pointer-casts DMA addresses into command bytes.
+`PrpEntry` stores the PRP lane as a native `u64` on the first-slice little-endian target. Wire encoding writes `stdx.addr.DmaAddr.raw()` into that field; it never pointer-casts DMA addresses into command bytes.
 
-`[znvme]` First-slice `PageSize` accepts only power-of-two byte sizes `>= 4096`.
+First-slice `PageSize` accepts only power-of-two byte sizes `>= 4096`.
 
-`[znvme]` Controller initialization owns deriving `PageSize` from `CAP.MPSMIN`, `CAP.MPSMAX`, and the selected `CC.MPS` value. PRP construction receives an already selected page size and validates only the local invariants it consumes.
+Controller initialization owns deriving `PageSize` from `CAP.MPSMIN`, `CAP.MPSMAX`, and the selected `CC.MPS` value. PRP construction receives an already selected page size and validates only the local invariants it consumes.
 
-`[znvme]` Empty payloads are rejected by PRP construction. A command with no data transfer does not need PRP construction.
+Empty payloads are rejected by PRP construction. A command with no data transfer does not need PRP construction.
 
-`[znvme]` `PRP1` is always the payload buffer's base `DmaAddr`.
+`PRP1` is always the payload buffer's base `DmaAddr`.
 
-`[znvme]` `IoQueueBase` is the SQE-side queue-base DMA pointer for Create I/O SQ/CQ with `PC=1`. It carries only `PRP1` and is distinct from `core.registers.QueueBase`, which is the register-block value type used to store `ASQ`/`ACQ`. `IoQueueBase.fromContiguous(buffer, page_size)` requires the queue-base buffer to be non-empty and aligned to the caller's configured page size. The admin builder writes `PRP1 = IoQueueBase.prp1` and `PRP2 = 0`; chained or PRP-list queue bases are not supported.
+`IoQueueBase` is the SQE-side queue-base DMA pointer for Create I/O SQ/CQ with `PC=1`. It carries only `PRP1` and is distinct from `core.registers.QueueBase`, which is the register-block value type used to store `ASQ`/`ACQ`. `IoQueueBase.fromContiguous(buffer, page_size)` requires the queue-base buffer to be non-empty and aligned to the caller's configured page size. The admin builder writes `PRP1 = IoQueueBase.prp1` and `PRP2 = 0`; chained or PRP-list queue bases are not supported.
 
-`[znvme]` `PRP1` permits a non-zero page offset, but bits `1:0` must be zero.
+`PRP1` permits a non-zero page offset, but bits `1:0` must be zero.
 
-`[znvme]` Every payload PRP entry after `PRP1` must be page-aligned.
+Every payload PRP entry after `PRP1` must be page-aligned.
 
-`[znvme]` If the payload fits in the bytes remaining in `PRP1`'s page, `PRP2` is zero.
+If the payload fits in the bytes remaining in `PRP1`'s page, `PRP2` is zero.
 
-`[znvme]` If the payload remainder after `PRP1` fits in one page, `PRP2` is the DMA address of that next payload page.
+If the payload remainder after `PRP1` fits in one page, `PRP2` is the DMA address of that next payload page.
 
-`[znvme]` If the payload remainder after `PRP1` needs more than one page, `PRP2` is the DMA address of a caller-supplied PRP-list page and that page is filled with page-aligned payload addresses.
+If the payload remainder after `PRP1` needs more than one page, `PRP2` is the DMA address of a caller-supplied PRP-list page and that page is filled with page-aligned payload addresses.
 
-`[znvme]` `PrpList` storage is caller-owned DMA memory. `DataPointers.fromContiguous` writes PRP-list entries through `PrpList.buffer.slice()` and uses `PrpList.buffer.dmaAddr()` for the `PRP2` list pointer.
+`PrpList` storage is caller-owned DMA memory. `DataPointers.fromContiguous` writes PRP-list entries through `PrpList.buffer.slice()` and uses `PrpList.buffer.dmaAddr()` for the `PRP2` list pointer.
 
-`[znvme]` First-slice `PrpList` DMA addresses must be page-aligned. This is a conservative local rule for the one-page PRP-list form; it does not describe SGL or chained-list behavior.
+First-slice `PrpList` DMA addresses must be page-aligned. This is a conservative local rule for the one-page PRP-list form; it does not describe SGL or chained-list behavior.
 
-`[znvme]` `PrpList.wrap` rejects PRP-list buffers longer than one configured page with `error.PrpListTooLarge`.
+`PrpList.wrap` rejects PRP-list buffers longer than one configured page with `error.PrpListTooLarge`.
 
-`[znvme]` First-slice PRP construction rejects transfers requiring more PRP-list entries than fit in one page. Chained PRP-list pages are deferred.
+First-slice PRP construction rejects transfers requiring more PRP-list entries than fit in one page. Chained PRP-list pages are deferred.
 
-`[znvme]` The last PRP entry can describe a partial final page. The command's transfer length determines how many bytes the controller transfers from the final page.
+The last PRP entry can describe a partial final page. The command's transfer length determines how many bytes the controller transfers from the final page.
 
-`[znvme]` Big-endian host/target compatibility is deferred in `docs/specs/project/scope.md`; first-slice code targets little-endian `x86_64-freestanding-none`.
+Big-endian host/target compatibility is deferred in `docs/specs/project/scope.md`; first-slice code targets little-endian `x86_64-freestanding-none`.
 
 ## Construction algorithm
 
 For `DataPointers.fromContiguous(.{ .payload = payload, .page_size = page_size, .prp_list_output = prp_list_output })`:
 
-1. `[znvme]` Reject empty payloads.
-2. `[znvme]` Reject payload base addresses with bits `1:0` set.
-3. `[znvme]` Set `PRP1 = payload.dmaAddr()`.
-4. `[znvme]` Compute `first_page_bytes = min(payload.byteLen(), page_size.bytes - page_offset(PRP1))`.
-5. `[znvme]` If `payload.byteLen() == first_page_bytes`, return `PRP2 = 0`.
-6. `[znvme]` Compute `second_addr = payload.dmaAddr() + first_page_bytes` and require it to be page-aligned.
-7. `[znvme]` If `payload.byteLen() - first_page_bytes <= page_size.bytes`, return `PRP2 = second_addr`.
-8. `[znvme]` Otherwise require `prp_list_output`.
-9. `[znvme]` Let `required = ceil((payload.byteLen() - first_page_bytes) / page_size.bytes)`.
-10. `[znvme]` Reject when `required > page_size.bytes / @sizeOf(PrpEntry)`.
-11. `[znvme]` Reject when `required > PrpList.capacity()`.
-12. `[znvme]` Write `required` page-aligned payload addresses into the PRP list, starting with `second_addr` and advancing by `page_size.bytes`.
-13. `[znvme]` Return `PRP2 = PrpList.buffer.dmaAddr()`.
+1. Reject empty payloads.
+2. Reject payload base addresses with bits `1:0` set.
+3. Set `PRP1 = payload.dmaAddr()`.
+4. Compute `first_page_bytes = min(payload.byteLen(), page_size.bytes - page_offset(PRP1))`.
+5. If `payload.byteLen() == first_page_bytes`, return `PRP2 = 0`.
+6. Compute `second_addr = payload.dmaAddr() + first_page_bytes` and require it to be page-aligned.
+7. If `payload.byteLen() - first_page_bytes <= page_size.bytes`, return `PRP2 = second_addr`.
+8. Otherwise require `prp_list_output`.
+9. Let `required = ceil((payload.byteLen() - first_page_bytes) / page_size.bytes)`.
+10. Reject when `required > page_size.bytes / @sizeOf(PrpEntry)`.
+11. Reject when `required > PrpList.capacity()`.
+12. Write `required` page-aligned payload addresses into the PRP list, starting with `second_addr` and advancing by `page_size.bytes`.
+13. Return `PRP2 = PrpList.buffer.dmaAddr()`.
 
 For `IoQueueBase.fromContiguous(buffer_bytes, page_size)`:
 
-1. `[znvme]` Reject empty buffers.
-2. `[znvme]` Reject buffers whose base is not aligned to `page_size.bytes`.
-3. `[znvme]` Return `IoQueueBase{ .prp1 = PrpEntry.fromDmaAddr(buffer_bytes.dmaAddr()) }`.
+1. Reject empty buffers.
+2. Reject buffers whose base is not aligned to `page_size.bytes`.
+3. Return `IoQueueBase{ .prp1 = PrpEntry.fromDmaAddr(buffer_bytes.dmaAddr()) }`.
 
 ## Approved API
 
@@ -324,25 +324,25 @@ fn ceilDivU64ToUsize(value: u64, divisor: u64) Error!usize {
 ```
 
 
-## Required tests `[znvme]`
+## Required tests
 
-- `[znvme]` `unit: prp entry layout is native 64-bit lane on little-endian target`
-- `[znvme]` `unit: data pointers layout matches PRP1 PRP2 pair`
-- `[znvme]` `unit: page size rejects zero non-power-of-two and below 4 KiB`
-- `[znvme]` `unit: data pointers from contiguous one-page payload clears PRP2`
-- `[znvme]` `unit: data pointers from contiguous offset payload uses PRP2 for second page`
-- `[znvme]` `unit: data pointers from contiguous multi-page payload fills PRP list`
-- `[znvme]` `unit: PRP construction rejects empty payload`
-- `[znvme]` `unit: PRP construction rejects low reserved PRP bits`
-- `[znvme]` `unit: PRP construction requires list for more than two PRP regions`
-- `[znvme]` `unit: PRP construction rejects short PRP list`
-- `[znvme]` `unit: PRP construction rejects misaligned PRP list DMA address`
-- `[znvme]` `unit: PRP construction rejects oversized PRP list buffer`
-- `[znvme]` `unit: PRP construction rejects transfers requiring chained PRP-list pages`
-- `[znvme]` `unit: io queue base fromContiguous rejects empty buffer`.
-- `[znvme]` `unit: io queue base fromContiguous rejects non-page-aligned base with MisalignedQueueBase`.
-- `[znvme]` `unit: io queue base fromContiguous returns PRP1 equal to buffer dmaAddr for a page-aligned buffer`.
-- `[znvme]` `unit: io queue base layout is a single PRP entry at offset zero`.
+- `unit: prp entry layout is native 64-bit lane on little-endian target`
+- `unit: data pointers layout matches PRP1 PRP2 pair`
+- `unit: page size rejects zero non-power-of-two and below 4 KiB`
+- `unit: data pointers from contiguous one-page payload clears PRP2`
+- `unit: data pointers from contiguous offset payload uses PRP2 for second page`
+- `unit: data pointers from contiguous multi-page payload fills PRP list`
+- `unit: PRP construction rejects empty payload`
+- `unit: PRP construction rejects low reserved PRP bits`
+- `unit: PRP construction requires list for more than two PRP regions`
+- `unit: PRP construction rejects short PRP list`
+- `unit: PRP construction rejects misaligned PRP list DMA address`
+- `unit: PRP construction rejects oversized PRP list buffer`
+- `unit: PRP construction rejects transfers requiring chained PRP-list pages`
+- `unit: io queue base fromContiguous rejects empty buffer`.
+- `unit: io queue base fromContiguous rejects non-page-aligned base with MisalignedQueueBase`.
+- `unit: io queue base fromContiguous returns PRP1 equal to buffer dmaAddr for a page-aligned buffer`.
+- `unit: io queue base layout is a single PRP entry at offset zero`.
 
 ## Open questions
 

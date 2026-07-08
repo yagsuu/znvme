@@ -2,35 +2,35 @@
 
 Status: Approved.
 
-`[znvme]` `Doorbells` owns NVMe SQ/CQ doorbell offset computation and host writes to doorbell MMIO registers. It composes `ControllerRegisters.mmioWindow()`, `CAP.DSTRD`, and `Qid`.
+`Doorbells` owns NVMe SQ/CQ doorbell offset computation and host writes to doorbell MMIO registers. It composes `ControllerRegisters.mmioWindow()`, `CAP.DSTRD`, and `Qid`.
 
-`[znvme]` A doorbell is notification, not queue state. Queue head/tail ownership, wrap, full/empty checks, phase-tag state, and queue-depth validation are owned by `docs/specs/controller/queue.md`.
+A doorbell is notification, not queue state. Queue head/tail ownership, wrap, full/empty checks, phase-tag state, and queue-depth validation are owned by `docs/specs/controller/queue.md`.
 
 ## Owned scope
 
-`[znvme]` This spec owns:
+This spec owns:
 
-- `[znvme]` doorbell base offset `0x1000`;
-- `[znvme]` doorbell stride computation from `CAP.DSTRD`;
-- `[znvme]` SQ tail doorbell offset formula;
-- `[znvme]` CQ head doorbell offset formula;
-- `[znvme]` 32-bit doorbell value encoding (`index` in bits `15:0`, upper bits zero);
-- `[znvme]` typed per-queue doorbell views for submission and completion queues;
-- `[znvme]` host writes for SQ tail and CQ head doorbells;
-- `[znvme]` the `mmio.release()` placement before SQ tail doorbell writes.
+- doorbell base offset `0x1000`;
+- doorbell stride computation from `CAP.DSTRD`;
+- SQ tail doorbell offset formula;
+- CQ head doorbell offset formula;
+- 32-bit doorbell value encoding (`index` in bits `15:0`, upper bits zero);
+- typed per-queue doorbell views for submission and completion queues;
+- host writes for SQ tail and CQ head doorbells;
+- the `mmio.release()` placement before SQ tail doorbell writes.
 
 ## Deferred scope and non-goals
 
-`[znvme]` This spec does not own:
+This spec does not own:
 
-- `[znvme]` queue ring state, capacity, wrap, or phase tags (`docs/specs/controller/queue.md`);
-- `[znvme]` command submission policy or synchronous polling loops;
-- `[znvme]` CQE DMA acquire barriers;
-- `[znvme]` interrupt behavior;
-- `[znvme]` doorbell-buffer configuration or shadow doorbells;
-- `[znvme]` reading doorbell registers;
-- `[znvme]` validating whether a queue id has been created;
-- `[znvme]` big-endian MMIO compatibility.
+- queue ring state, capacity, wrap, or phase tags (`docs/specs/controller/queue.md`);
+- command submission policy or synchronous polling loops;
+- CQE DMA acquire barriers;
+- interrupt behavior;
+- doorbell-buffer configuration or shadow doorbells;
+- reading doorbell registers;
+- validating whether a queue id has been created;
+- big-endian MMIO compatibility.
 
 ## NVMe behavior
 
@@ -215,51 +215,51 @@ comptime {
 
 ## Boundary rules
 
-`[znvme]` `Doorbells` borrows a `stdx.io.Mmio.Window`; it owns no MMIO mapping and no queue memory.
+`Doorbells` borrows a `stdx.io.Mmio.Window`; it owns no MMIO mapping and no queue memory.
 
-`[znvme]` `Doorbells.submissionQueue(qid)` and `Doorbells.completionQueue(qid)` return small borrowed views and allocate nothing.
+`Doorbells.submissionQueue(qid)` and `Doorbells.completionQueue(qid)` return small borrowed views and allocate nothing.
 
-`[znvme]` The per-queue views assert that `Qid.reserved_max` is not used. Whether a non-reserved QID names a created queue is owned by `controller/queue.md`.
+The per-queue views assert that `Qid.reserved_max` is not used. Whether a non-reserved QID names a created queue is owned by `controller/queue.md`.
 
-`[znvme]` `SubmissionQueueDoorbell.setTail` performs `stdx.barrier.mmio.release()` immediately before the MMIO store. This orders prior SQE writes in caller-owned DMA memory before the controller observes the new SQ tail.
+`SubmissionQueueDoorbell.setTail` performs `stdx.barrier.mmio.release()` immediately before the MMIO store. This orders prior SQE writes in caller-owned DMA memory before the controller observes the new SQ tail.
 
-`[znvme]` `CompletionQueueDoorbell.setHead` performs only the MMIO store. CQE visibility is handled by the queue/CQE consumption path before entries are consumed; the CQ head doorbell only returns slots to the controller.
+`CompletionQueueDoorbell.setHead` performs only the MMIO store. CQE visibility is handled by the queue/CQE consumption path before entries are consumed; the CQ head doorbell only returns slots to the controller.
 
-`[znvme]` No API reads doorbell registers.
+No API reads doorbell registers.
 
 ## Error and validation behavior
 
-- `[znvme]` `Stride.fromDstrd` accepts every `u4` value. The maximum NVMe value still fits `usize` on the required `x86_64` target.
-- `[znvme]` `Value.fromIndex` accepts every `u16` value. Queue capacity validation belongs to `controller/queue.md`.
-- `[znvme]` `SubmissionQueueDoorbell.setTail` and `CompletionQueueDoorbell.setHead` return `stdx.io.Mmio.Window.Error` if the backing MMIO window is too short or unexpectedly misaligned.
-- `[znvme]` The per-queue view constructors and offset helper use a debug assertion for `Qid.reserved_max`; this is a programmer error after queue-id validation.
+- `Stride.fromDstrd` accepts every `u4` value. The maximum NVMe value still fits `usize` on the required `x86_64` target.
+- `Value.fromIndex` accepts every `u16` value. Queue capacity validation belongs to `controller/queue.md`.
+- `SubmissionQueueDoorbell.setTail` and `CompletionQueueDoorbell.setHead` return `stdx.io.Mmio.Window.Error` if the backing MMIO window is too short or unexpectedly misaligned.
+- The per-queue view constructors and offset helper use a debug assertion for `Qid.reserved_max`; this is a programmer error after queue-id validation.
 
 ## Behavior contract
 
 | Operation | Allocation | Waiting | Bounds | Concurrency | Ordering | Errors |
 | --- | --- | --- | --- | --- | --- | --- |
-| `[znvme]` `Stride.fromDstrd` / `fromCap` | never | never | O(1) | value type | none | infallible |
-| `[znvme]` `Value.fromIndex` / `raw` | never | never | O(1) | value type | none | infallible |
-| `[znvme]` `Doorbells.init` / `fromRegisters` | never | never | O(1) | borrowed value | none | infallible |
-| `[znvme]` `submissionQueue` / `completionQueue` | never | never | O(1) | borrowed value | none | debug assert on reserved QID |
-| `[znvme]` `SubmissionQueueDoorbell.offset` / `CompletionQueueDoorbell.offset` | never | never | O(1) | value type | none | debug assert on reserved QID |
-| `[znvme]` `SubmissionQueueDoorbell.setTail` | never | never | O(1) via `Mmio.Window` | caller-serialized per SQ | `mmio.release` then volatile store | `Mmio.Window.Error` |
-| `[znvme]` `CompletionQueueDoorbell.setHead` | never | never | O(1) via `Mmio.Window` | caller-serialized per CQ | volatile store only | `Mmio.Window.Error` |
+| `Stride.fromDstrd` / `fromCap` | never | never | O(1) | value type | none | infallible |
+| `Value.fromIndex` / `raw` | never | never | O(1) | value type | none | infallible |
+| `Doorbells.init` / `fromRegisters` | never | never | O(1) | borrowed value | none | infallible |
+| `submissionQueue` / `completionQueue` | never | never | O(1) | borrowed value | none | debug assert on reserved QID |
+| `SubmissionQueueDoorbell.offset` / `CompletionQueueDoorbell.offset` | never | never | O(1) | value type | none | debug assert on reserved QID |
+| `SubmissionQueueDoorbell.setTail` | never | never | O(1) via `Mmio.Window` | caller-serialized per SQ | `mmio.release` then volatile store | `Mmio.Window.Error` |
+| `CompletionQueueDoorbell.setHead` | never | never | O(1) via `Mmio.Window` | caller-serialized per CQ | volatile store only | `Mmio.Window.Error` |
 
-## Required tests `[znvme]`
+## Required tests
 
-`[znvme]` Test file `test/core/doorbell_test.zig`. Naming per `docs/guidelines/testing.md`.
+Test file `test/core/doorbell_test.zig`. Naming per `docs/guidelines/testing.md`.
 
-- `[znvme]` `unit: doorbell stride expands CAP DSTRD` — `0 -> 4`, `2 -> 16`, `15 -> 131072`.
-- `[znvme]` `unit: submission doorbell offset for admin queue with packed stride` — SQ0 `0x1000`.
-- `[znvme]` `unit: completion doorbell offset for admin queue with packed stride` — CQ0 `0x1004`.
-- `[znvme]` `unit: submission doorbell offset for io queue with packed stride` — QID 1 gives SQ1 `0x1008` when `DSTRD = 0`.
-- `[znvme]` `unit: completion doorbell offset for io queue with packed stride` — QID 1 gives CQ1 `0x100c` when `DSTRD = 0`.
-- `[znvme]` `unit: doorbell offsets honor expanded stride` — QID 1 gives SQ1 `0x1020`, CQ1 `0x1030` when `DSTRD = 2`.
-- `[znvme]` `unit: doorbell value stores index and clears reserved bits`.
-- `[znvme]` `unit: submission queue setTail writes expected MMIO lane` using a caller-owned aligned byte buffer.
-- `[znvme]` `unit: completion queue setHead writes expected MMIO lane` using a caller-owned aligned byte buffer.
-- `[znvme]` `unit: doorbell write rejects short window`.
+- `unit: doorbell stride expands CAP DSTRD` — `0 -> 4`, `2 -> 16`, `15 -> 131072`.
+- `unit: submission doorbell offset for admin queue with packed stride` — SQ0 `0x1000`.
+- `unit: completion doorbell offset for admin queue with packed stride` — CQ0 `0x1004`.
+- `unit: submission doorbell offset for io queue with packed stride` — QID 1 gives SQ1 `0x1008` when `DSTRD = 0`.
+- `unit: completion doorbell offset for io queue with packed stride` — QID 1 gives CQ1 `0x100c` when `DSTRD = 0`.
+- `unit: doorbell offsets honor expanded stride` — QID 1 gives SQ1 `0x1020`, CQ1 `0x1030` when `DSTRD = 2`.
+- `unit: doorbell value stores index and clears reserved bits`.
+- `unit: submission queue setTail writes expected MMIO lane` using a caller-owned aligned byte buffer.
+- `unit: completion queue setHead writes expected MMIO lane` using a caller-owned aligned byte buffer.
+- `unit: doorbell write rejects short window`.
 
 ## Open questions
 
