@@ -1,6 +1,6 @@
 .{
     .name = .znvme,
-    .version = "0.0.0",
+    .version = "0.1.0",
     .fingerprint = 0x134e1b9c70a8c56d,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{

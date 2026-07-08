@@ -200,5 +200,5 @@ Start with:
 
 ## Status
 
-Version `0.0.0`. Every module in the initial spec set is approved and landed;
+Version `0.1.0`. Every module in the initial spec set is approved and landed;
 the public facade is stable within that surface.
