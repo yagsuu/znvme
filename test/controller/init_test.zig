@@ -12,7 +12,7 @@ const Cc = nvme.core.registers.Cc;
 const CidAllocator = nvme.controller.queue.CidAllocator;
 const Cqe = nvme.commands.cqe.Cqe;
 const Csts = nvme.core.registers.Csts;
-const DmaAddr = stdx.addr.DmaAddr;
+const DMAAddr = stdx.addr.DMAAddr;
 const QueueBase = nvme.core.registers.QueueBase;
 const ShutdownNotification = nvme.core.registers.ShutdownNotification;
 const ShutdownStatus = nvme.core.registers.ShutdownStatus;
@@ -146,8 +146,8 @@ const AdminStorage = struct {
 
 fn makeAdmin(storage: *AdminStorage) !Controller.Admin.Storage {
     return .{
-        .sq = try stdx.dma.Buffer(Sqe).init(storage.sq_backing[0..], DmaAddr.fromInt(ASQ_ADDR)),
-        .cq = try stdx.dma.Buffer(Cqe).init(storage.cq_backing[0..], DmaAddr.fromInt(ACQ_ADDR)),
+        .sq = try stdx.dma.Buffer(Sqe).init(storage.sq_backing[0..], DMAAddr.fromInt(ASQ_ADDR)),
+        .cq = try stdx.dma.Buffer(Cqe).init(storage.cq_backing[0..], DMAAddr.fromInt(ACQ_ADDR)),
         .cid_words = storage.cid_words[0..],
     };
 }
@@ -223,8 +223,8 @@ test "unit: controller init rejects AdminPairMismatch when admin SQ and CQ depth
     var cq_backing: [4]Cqe align(@alignOf(Cqe)) = @splat(.{});
     var cid_words: [stdx.bits.word.count(CidAllocator.Word, 8)]CidAllocator.Word = @splat(0);
     const admin: Controller.Admin.Storage = .{
-        .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DmaAddr.fromInt(ASQ_ADDR)),
-        .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DmaAddr.fromInt(ACQ_ADDR)),
+        .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DMAAddr.fromInt(ASQ_ADDR)),
+        .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DMAAddr.fromInt(ACQ_ADDR)),
         .cid_words = cid_words[0..],
     };
     try testing.expectError(error.AdminPairMismatch, Controller.init(try makeConfig(sub.regs, admin)));
@@ -241,8 +241,8 @@ test "unit: controller init propagates QueueDepthOutOfRange from Aqa.fromDepths 
     var cq_backing: [0]Cqe = undefined;
     var cid_words: [1]CidAllocator.Word = @splat(0);
     const admin: Controller.Admin.Storage = .{
-        .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DmaAddr.fromInt(ASQ_ADDR)),
-        .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DmaAddr.fromInt(ACQ_ADDR)),
+        .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DMAAddr.fromInt(ASQ_ADDR)),
+        .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DMAAddr.fromInt(ACQ_ADDR)),
         .cid_words = cid_words[0..],
     };
     try testing.expectError(error.QueueDepthOutOfRange, Controller.init(try makeConfig(sub.regs, admin)));
@@ -262,8 +262,8 @@ test "unit: controller init propagates Misaligned from QueueBase.fromDmaAddr for
     var cq_backing: [ADMIN_DEPTH]Cqe align(@alignOf(Cqe)) = @splat(.{});
     var cid_words: [stdx.bits.word.count(CidAllocator.Word, ADMIN_DEPTH)]CidAllocator.Word = @splat(0);
     const admin: Controller.Admin.Storage = .{
-        .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DmaAddr.fromInt(0x1_0000_0080)), // 128-B aligned, not 4 KiB
-        .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DmaAddr.fromInt(ACQ_ADDR)),
+        .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DMAAddr.fromInt(0x1_0000_0080)), // 128-B aligned, not 4 KiB
+        .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DMAAddr.fromInt(ACQ_ADDR)),
         .cid_words = cid_words[0..],
     };
     try testing.expectError(error.Misaligned, Controller.init(try makeConfig(sub.regs, admin)));
@@ -277,8 +277,8 @@ test "unit: controller init propagates Misaligned from QueueBase.fromDmaAddr for
     var cq_backing: [ADMIN_DEPTH]Cqe align(@alignOf(Cqe)) = @splat(.{});
     var cid_words: [stdx.bits.word.count(CidAllocator.Word, ADMIN_DEPTH)]CidAllocator.Word = @splat(0);
     const admin: Controller.Admin.Storage = .{
-        .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DmaAddr.fromInt(ASQ_ADDR)),
-        .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DmaAddr.fromInt(0x2_0000_0080)), // 128-B aligned
+        .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DMAAddr.fromInt(ASQ_ADDR)),
+        .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DMAAddr.fromInt(0x2_0000_0080)), // 128-B aligned
         .cid_words = cid_words[0..],
     };
     try testing.expectError(error.Misaligned, Controller.init(try makeConfig(sub.regs, admin)));
@@ -292,8 +292,8 @@ test "unit: controller init rejects undersized admin CID bitmap before enable wr
     var cq_backing: [ADMIN_DEPTH]Cqe align(@alignOf(Cqe)) = @splat(.{});
     var cid_words: [0]CidAllocator.Word = .{}; // deliberately too small for depth 8
     const admin: Controller.Admin.Storage = .{
-        .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DmaAddr.fromInt(ASQ_ADDR)),
-        .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DmaAddr.fromInt(ACQ_ADDR)),
+        .sq = try stdx.dma.Buffer(Sqe).init(sq_backing[0..], DMAAddr.fromInt(ASQ_ADDR)),
+        .cq = try stdx.dma.Buffer(Cqe).init(cq_backing[0..], DMAAddr.fromInt(ACQ_ADDR)),
         .cid_words = cid_words[0..],
     };
     try testing.expectError(error.OutOfBounds, Controller.init(try makeConfig(sub.regs, admin)));
@@ -310,8 +310,10 @@ test "unit: controller init derives ready_timeout from CAP.TO 500ms units" {
     const sub = try RegSubstrate.init(&bar, cap);
 
     var storage: AdminStorage = .{};
-    const ctrl = try Controller.init(try makeConfig(sub.regs, try makeAdmin(&storage)));
+
     const expected = try stdx.time.Duration.fromMillis(20 * 500);
+    const ctrl = try Controller.init(try makeConfig(sub.regs, try makeAdmin(&storage)));
+
     try testing.expectEqual(expected.nanos(), ctrl.ready_timeout.nanos());
 }
 
@@ -322,7 +324,9 @@ test "unit: controller init derives doorbells from CAP.DSTRD" {
     const sub = try RegSubstrate.init(&bar, cap);
 
     var storage: AdminStorage = .{};
+
     const ctrl = try Controller.init(try makeConfig(sub.regs, try makeAdmin(&storage)));
+
     try testing.expectEqual(@as(usize, 0x1000), ctrl.doorbells().submissionQueue(.admin).offset());
 }
 
@@ -481,8 +485,8 @@ test "unit: controller enable writes AQA ASQ ACQ and CC with mps css iosqes iocq
 
     // Exact bytes match the spec-required derivations.
     const expected_aqa = try Aqa.fromDepths(.{ .submission_entries = ADMIN_DEPTH, .completion_entries = ADMIN_DEPTH });
-    const expected_asq = try QueueBase.fromDmaAddr(DmaAddr.fromInt(ASQ_ADDR));
-    const expected_acq = try QueueBase.fromDmaAddr(DmaAddr.fromInt(ACQ_ADDR));
+    const expected_asq = try QueueBase.fromDmaAddr(DMAAddr.fromInt(ASQ_ADDR));
+    const expected_acq = try QueueBase.fromDmaAddr(DMAAddr.fromInt(ACQ_ADDR));
     try testing.expectEqual(expected_aqa.raw(), sub.readAqaRaw());
     try testing.expectEqual(expected_asq.raw(), sub.readAsqRaw());
     try testing.expectEqual(expected_acq.raw(), sub.readAcqRaw());

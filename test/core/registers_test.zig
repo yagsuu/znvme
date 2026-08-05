@@ -5,7 +5,7 @@ const std = @import("std");
 const nvme = @import("nvme");
 
 const registers = nvme.core.registers;
-const DmaAddr = @TypeOf(registers.QueueBase.fromRaw(0).dmaAddr());
+const DMAAddr = @TypeOf(registers.QueueBase.fromRaw(0).dmaAddr());
 
 test "unit: registers block offsets match NVMe controller properties" {
     try std.testing.expectEqual(@as(usize, 0x0000), @offsetOf(registers.RegisterBlock, "cap"));
@@ -201,16 +201,16 @@ test "unit: aqa rejects zero and too-large depths" {
 test "unit: queue base rejects unaligned DMA address" {
     try std.testing.expectError(
         error.Misaligned,
-        registers.QueueBase.fromDmaAddr(DmaAddr.fromInt(0x1000 | 0x1)),
+        registers.QueueBase.fromDmaAddr(DMAAddr.fromInt(0x1000 | 0x1)),
     );
     try std.testing.expectError(
         error.Misaligned,
-        registers.QueueBase.fromDmaAddr(DmaAddr.fromInt(0x800)),
+        registers.QueueBase.fromDmaAddr(DMAAddr.fromInt(0x800)),
     );
 }
 
 test "unit: queue base roundtrips aligned DMA address" {
-    const addr = DmaAddr.fromInt(0x0000_0000_1000_2000);
+    const addr = DMAAddr.fromInt(0x0000_0000_1000_2000);
     const qb = try registers.QueueBase.fromDmaAddr(addr);
     try std.testing.expectEqual(addr.raw(), qb.raw());
     try std.testing.expectEqual(addr.raw(), qb.dmaAddr().raw());
@@ -218,8 +218,8 @@ test "unit: queue base roundtrips aligned DMA address" {
 
 test "unit: controller registers storeCap writes CAP through the mmio window and cap reads it back" {
     var bar_bytes: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
-    const regs = try registers.ControllerRegisters.at(&bar_bytes);
-    const v: registers.Cap = .{
+
+    const value: registers.Cap = .{
         .mqes = 0x00ff,
         .cqr = 0,
         .ams = 0,
@@ -236,24 +236,28 @@ test "unit: controller registers storeCap writes CAP through the mmio window and
         .nsss = 0,
         .crms = 0,
     };
-    regs.storeCap(v);
-    try std.testing.expectEqual(v.raw(), regs.cap().raw());
-    try std.testing.expectEqual(v.raw(), std.mem.readInt(u64, bar_bytes[0..8], .little));
+    const regs = try registers.ControllerRegisters.at(&bar_bytes);
+    regs.storeCap(value);
+
+    try std.testing.expectEqual(value.raw(), regs.cap().raw());
+    try std.testing.expectEqual(value.raw(), std.mem.readInt(u64, bar_bytes[0..8], .little));
 }
 
 test "unit: controller registers storeVersion writes VS and version reads it back" {
     var bar_bytes: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
+
+    const value: registers.Version = .{ .tertiary = 0, .minor = 4, .major = 1 };
     const regs = try registers.ControllerRegisters.at(&bar_bytes);
-    const v: registers.Version = .{ .tertiary = 0, .minor = 4, .major = 1 };
-    regs.storeVersion(v);
-    try std.testing.expectEqual(v.raw(), regs.version().raw());
-    try std.testing.expectEqual(v.raw(), std.mem.readInt(u32, bar_bytes[0x08..0x0c], .little));
+    regs.storeVersion(value);
+
+    try std.testing.expectEqual(value.raw(), regs.version().raw());
+    try std.testing.expectEqual(value.raw(), std.mem.readInt(u32, bar_bytes[0x08..0x0c], .little));
 }
 
 test "unit: controller registers storeCsts writes CSTS and csts reads it back" {
     var bar_bytes: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
-    const regs = try registers.ControllerRegisters.at(&bar_bytes);
-    const v: registers.Csts = .{
+
+    const value: registers.Csts = .{
         .rdy = 1,
         .cfs = 0,
         .shst = .occurring,
@@ -261,33 +265,41 @@ test "unit: controller registers storeCsts writes CSTS and csts reads it back" {
         .pp = 0,
         .st = 0,
     };
-    regs.storeCsts(v);
-    try std.testing.expectEqual(v.raw(), regs.csts().raw());
-    try std.testing.expectEqual(v.raw(), std.mem.readInt(u32, bar_bytes[0x1c..0x20], .little));
+    const regs = try registers.ControllerRegisters.at(&bar_bytes);
+    regs.storeCsts(value);
+
+    try std.testing.expectEqual(value.raw(), regs.csts().raw());
+    try std.testing.expectEqual(value.raw(), std.mem.readInt(u32, bar_bytes[0x1c..0x20], .little));
 }
 
 test "unit: controller registers aqa reads back what storeAqa wrote" {
     var bar_bytes: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
+
+    const value = try registers.Aqa.fromDepths(.{ .submission_entries = 64, .completion_entries = 128 });
     const regs = try registers.ControllerRegisters.at(&bar_bytes);
-    const v = try registers.Aqa.fromDepths(.{ .submission_entries = 64, .completion_entries = 128 });
-    regs.storeAqa(v);
-    try std.testing.expectEqual(v.raw(), regs.aqa().raw());
+    regs.storeAqa(value);
+
+    try std.testing.expectEqual(value.raw(), regs.aqa().raw());
 }
 
 test "unit: controller registers asq reads back what storeAsq wrote" {
     var bar_bytes: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
+
+    const value = try registers.QueueBase.fromDmaAddr(DMAAddr.fromInt(0x0000_0000_2000_0000));
     const regs = try registers.ControllerRegisters.at(&bar_bytes);
-    const v = try registers.QueueBase.fromDmaAddr(DmaAddr.fromInt(0x0000_0000_2000_0000));
-    regs.storeAsq(v);
-    try std.testing.expectEqual(v.raw(), regs.asq().raw());
+    regs.storeAsq(value);
+
+    try std.testing.expectEqual(value.raw(), regs.asq().raw());
     try std.testing.expectEqual(@as(u64, 0x0000_0000_2000_0000), regs.asq().dmaAddr().raw());
 }
 
 test "unit: controller registers acq reads back what storeAcq wrote" {
     var bar_bytes: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
+
+    const value = try registers.QueueBase.fromDmaAddr(DMAAddr.fromInt(0x0000_0000_3000_0000));
     const regs = try registers.ControllerRegisters.at(&bar_bytes);
-    const v = try registers.QueueBase.fromDmaAddr(DmaAddr.fromInt(0x0000_0000_3000_0000));
-    regs.storeAcq(v);
-    try std.testing.expectEqual(v.raw(), regs.acq().raw());
+    regs.storeAcq(value);
+
+    try std.testing.expectEqual(value.raw(), regs.acq().raw());
     try std.testing.expectEqual(@as(u64, 0x0000_0000_3000_0000), regs.acq().dmaAddr().raw());
 }

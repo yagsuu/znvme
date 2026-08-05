@@ -4,7 +4,7 @@ const std = @import("std");
 
 const stdx = @import("stdx");
 
-const DmaAddr = stdx.addr.DmaAddr;
+const DMAAddr = stdx.addr.DMAAddr;
 
 pub const Error = error{
     EmptyPayload,
@@ -19,13 +19,13 @@ pub const Error = error{
     Overflow,
 };
 
-/// Single 64-bit PRP entry: `DmaAddr` in host byte order on the wire.
+/// Single 64-bit PRP entry: `DMAAddr` in host byte order on the wire.
 pub const PrpEntry = extern struct {
     value: u64,
 
     pub const zero: PrpEntry = .{ .value = 0 };
 
-    pub fn fromDmaAddr(addr: DmaAddr) PrpEntry {
+    pub fn fromDmaAddr(addr: DMAAddr) PrpEntry {
         return .{ .value = addr.raw() };
     }
 
@@ -33,7 +33,7 @@ pub const PrpEntry = extern struct {
         return self.value;
     }
 
-    pub fn dmaAddr(self: PrpEntry) DmaAddr {
+    pub fn dmaAddr(self: PrpEntry) DMAAddr {
         return .fromInt(self.raw());
     }
 
@@ -155,15 +155,15 @@ pub const PageSize = struct {
         return .{ .bytes = bytes };
     }
 
-    pub fn offset(self: PageSize, addr: DmaAddr) u64 {
+    pub fn offset(self: PageSize, addr: DMAAddr) u64 {
         return addr.raw() & (self.bytes - 1);
     }
 
-    pub fn isPageAligned(self: PageSize, addr: DmaAddr) bool {
+    pub fn isPageAligned(self: PageSize, addr: DMAAddr) bool {
         return self.offset(addr) == 0;
     }
 
-    pub fn remainingInPage(self: PageSize, addr: DmaAddr) u64 {
+    pub fn remainingInPage(self: PageSize, addr: DMAAddr) u64 {
         return self.bytes - self.offset(addr);
     }
 

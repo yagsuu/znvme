@@ -63,7 +63,7 @@ var admin_cq_backing: [depth]Cqe align(@alignOf(Cqe)) = .{.{}} ** depth;
 var admin_cid_words: [stdx.bits.word.count(CidWord, depth)]CidWord = @splat(0);
 
 var ctrl = try Controller.init(.{
-    .registers = regs, // stdx.io.Mmio.Window over the BAR
+    .registers = regs, // stdx.io.MMIO.Window over the BAR
     .admin = .{
         .sq = try stdx.dma.Buffer(Sqe).init(&admin_sq_backing, asq_addr),
         .cq = try stdx.dma.Buffer(Cqe).init(&admin_cq_backing, acq_addr),

@@ -51,7 +51,7 @@ test "unit: page size rejects zero non-power-of-two and below 4 KiB" {
 
 test "unit: data pointers from contiguous one-page payload clears PRP2" {
     var backing: [4096]u8 align(8) = @splat(0);
-    const base = stdx.addr.DmaAddr.fromInt(0x1_0000_0000);
+    const base = stdx.addr.DMAAddr.fromInt(0x1_0000_0000);
     const payload = try stdx.dma.Buffer(u8).init(backing[0..], base);
     const page_size = try prp.PageSize.fromBytes(4096);
 
@@ -69,7 +69,7 @@ test "unit: data pointers from contiguous offset payload uses PRP2 for second pa
     // pages: 0x800 in the first, 0x800 in the second.
     var backing: [4096]u8 align(8) = @splat(0);
     const offset: u64 = 0x800;
-    const base = stdx.addr.DmaAddr.fromInt(0x1_0000_0000 + offset);
+    const base = stdx.addr.DMAAddr.fromInt(0x1_0000_0000 + offset);
     const payload = try stdx.dma.Buffer(u8).init(backing[0..], base);
     const page_size = try prp.PageSize.fromBytes(4096);
 
@@ -87,12 +87,12 @@ test "unit: data pointers from contiguous multi-page payload fills PRP list" {
     // Page-aligned base, four 4 KiB pages total. PRP1 covers page 0; PRP2
     // points at the list which holds entries for pages 1, 2, and 3.
     var backing: [4 * 4096]u8 align(4096) = @splat(0);
-    const base = stdx.addr.DmaAddr.fromInt(0x1_0000_0000);
+    const base = stdx.addr.DMAAddr.fromInt(0x1_0000_0000);
     const payload = try stdx.dma.Buffer(u8).init(backing[0..], base);
     const page_size = try prp.PageSize.fromBytes(4096);
 
     var list_backing: [512]prp.PrpEntry align(8) = @splat(.zero);
-    const list_dma = stdx.addr.DmaAddr.fromInt(0x2_0000_0000);
+    const list_dma = stdx.addr.DMAAddr.fromInt(0x2_0000_0000);
     const list_buf = try stdx.dma.Buffer(prp.PrpEntry).init(list_backing[0..], list_dma);
     const list = try prp.PrpList.wrap(list_buf, page_size);
 
@@ -113,7 +113,7 @@ test "unit: data pointers from contiguous multi-page payload fills PRP list" {
 
 test "unit: PRP construction rejects empty payload" {
     var backing: [16]u8 align(8) = @splat(0);
-    const base = stdx.addr.DmaAddr.fromInt(0x1_0000_0000);
+    const base = stdx.addr.DMAAddr.fromInt(0x1_0000_0000);
     const empty = try stdx.dma.Buffer(u8).init(backing[0..0], base);
     const page_size = try prp.PageSize.fromBytes(4096);
 
@@ -126,7 +126,7 @@ test "unit: PRP construction rejects empty payload" {
 test "unit: PRP construction rejects low reserved PRP bits" {
     // Low two bits of the payload DMA address must be zero.
     var backing: [4096]u8 align(8) = @splat(0);
-    const base = stdx.addr.DmaAddr.fromInt(0x1_0000_0001);
+    const base = stdx.addr.DMAAddr.fromInt(0x1_0000_0001);
     const payload = try stdx.dma.Buffer(u8).init(backing[0..], base);
     const page_size = try prp.PageSize.fromBytes(4096);
 
@@ -139,7 +139,7 @@ test "unit: PRP construction rejects low reserved PRP bits" {
 test "unit: PRP construction requires list for more than two PRP regions" {
     // Four pages page-aligned needs a PRP list; omit it.
     var backing: [4 * 4096]u8 align(4096) = @splat(0);
-    const base = stdx.addr.DmaAddr.fromInt(0x1_0000_0000);
+    const base = stdx.addr.DMAAddr.fromInt(0x1_0000_0000);
     const payload = try stdx.dma.Buffer(u8).init(backing[0..], base);
     const page_size = try prp.PageSize.fromBytes(4096);
 
@@ -153,12 +153,12 @@ test "unit: PRP construction requires list for more than two PRP regions" {
 test "unit: PRP construction rejects short PRP list" {
     // Payload needs 3 list entries; give it a 2-entry list.
     var backing: [4 * 4096]u8 align(4096) = @splat(0);
-    const base = stdx.addr.DmaAddr.fromInt(0x1_0000_0000);
+    const base = stdx.addr.DMAAddr.fromInt(0x1_0000_0000);
     const payload = try stdx.dma.Buffer(u8).init(backing[0..], base);
     const page_size = try prp.PageSize.fromBytes(4096);
 
     var list_backing: [2]prp.PrpEntry align(8) = @splat(.zero);
-    const list_dma = stdx.addr.DmaAddr.fromInt(0x2_0000_0000);
+    const list_dma = stdx.addr.DMAAddr.fromInt(0x2_0000_0000);
     const list_buf = try stdx.dma.Buffer(prp.PrpEntry).init(list_backing[0..], list_dma);
     const list = try prp.PrpList.wrap(list_buf, page_size);
 
@@ -171,7 +171,7 @@ test "unit: PRP construction rejects short PRP list" {
 
 test "unit: PRP construction rejects misaligned PRP list DMA address" {
     var list_backing: [8]prp.PrpEntry align(8) = @splat(.zero);
-    const list_dma = stdx.addr.DmaAddr.fromInt(0x2_0000_0008);
+    const list_dma = stdx.addr.DMAAddr.fromInt(0x2_0000_0008);
     const list_buf = try stdx.dma.Buffer(prp.PrpEntry).init(list_backing[0..], list_dma);
     const page_size = try prp.PageSize.fromBytes(4096);
 
@@ -181,7 +181,7 @@ test "unit: PRP construction rejects misaligned PRP list DMA address" {
 test "unit: PRP construction rejects oversized PRP list buffer" {
     // 4 KiB page => entriesPerListPage == 512. 513 slots trips PrpListTooLarge.
     var list_backing: [513]prp.PrpEntry align(8) = @splat(.zero);
-    const list_dma = stdx.addr.DmaAddr.fromInt(0x2_0000_0000);
+    const list_dma = stdx.addr.DMAAddr.fromInt(0x2_0000_0000);
     const list_buf = try stdx.dma.Buffer(prp.PrpEntry).init(list_backing[0..], list_dma);
     const page_size = try prp.PageSize.fromBytes(4096);
 
@@ -191,14 +191,14 @@ test "unit: PRP construction rejects oversized PRP list buffer" {
 test "unit: PRP construction rejects transfers requiring chained PRP-list pages" {
     // Page-aligned base + 514 * 4096 bytes -> first_bytes=4096, remaining=
     // 513*4096, required=513 > entriesPerListPage(512).
-    const base = stdx.addr.DmaAddr.fromInt(0x1_0000_0000);
+    const base = stdx.addr.DMAAddr.fromInt(0x1_0000_0000);
     const payload = try stdx.dma.Buffer(u8).init(chained_transfer_backing[0..], base);
     const page_size = try prp.PageSize.fromBytes(4096);
 
     // Supply a maximum-capacity list so the TransferTooLarge guard fires
     // strictly before the capacity check.
     var list_backing: [512]prp.PrpEntry align(8) = @splat(.zero);
-    const list_dma = stdx.addr.DmaAddr.fromInt(0x2_0000_0000);
+    const list_dma = stdx.addr.DMAAddr.fromInt(0x2_0000_0000);
     const list_buf = try stdx.dma.Buffer(prp.PrpEntry).init(list_backing[0..], list_dma);
     const list = try prp.PrpList.wrap(list_buf, page_size);
 
@@ -211,7 +211,7 @@ test "unit: PRP construction rejects transfers requiring chained PRP-list pages"
 
 test "unit: io queue base fromContiguous rejects empty buffer" {
     var backing: [16]u8 align(8) = @splat(0);
-    const base = stdx.addr.DmaAddr.fromInt(0x1_0000_0000);
+    const base = stdx.addr.DMAAddr.fromInt(0x1_0000_0000);
     const empty = try stdx.dma.Buffer(u8).init(backing[0..0], base);
     const page_size = try prp.PageSize.fromBytes(4096);
 
@@ -220,7 +220,7 @@ test "unit: io queue base fromContiguous rejects empty buffer" {
 
 test "unit: io queue base fromContiguous rejects non-page-aligned base with MisalignedQueueBase" {
     var backing: [4096]u8 align(8) = @splat(0);
-    const base = stdx.addr.DmaAddr.fromInt(0x800);
+    const base = stdx.addr.DMAAddr.fromInt(0x800);
     const buffer = try stdx.dma.Buffer(u8).init(backing[0..], base);
     const page_size = try prp.PageSize.fromBytes(4096);
 
@@ -229,7 +229,7 @@ test "unit: io queue base fromContiguous rejects non-page-aligned base with Misa
 
 test "unit: io queue base fromContiguous returns PRP1 equal to buffer dmaAddr for a page-aligned buffer" {
     var backing: [4096]u8 align(4096) = @splat(0);
-    const base = stdx.addr.DmaAddr.fromInt(0x1000);
+    const base = stdx.addr.DMAAddr.fromInt(0x1000);
     const buffer = try stdx.dma.Buffer(u8).init(backing[0..], base);
     const page_size = try prp.PageSize.fromBytes(4096);
 

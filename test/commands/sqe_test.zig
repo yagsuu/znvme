@@ -425,12 +425,12 @@ test "roundtrip: Sqe.init composes prp list dptr from prp construction" {
     // Four-page page-aligned payload requires a PRP list; Sqe.init must carry
     // prp.DataPointers.fromContiguous straight into the slot's DPTR lane.
     var payload_backing: [4 * 4096]u8 align(4096) = @splat(0);
-    const payload_base = stdx.addr.DmaAddr.fromInt(0x1_0000_0000);
+    const payload_base = stdx.addr.DMAAddr.fromInt(0x1_0000_0000);
     const payload = try stdx.dma.Buffer(u8).init(payload_backing[0..], payload_base);
     const page_size = try prp.PageSize.fromBytes(4096);
 
     var list_backing: [512]PrpEntry align(8) = @splat(.zero);
-    const list_dma = stdx.addr.DmaAddr.fromInt(0x2_0000_0000);
+    const list_dma = stdx.addr.DMAAddr.fromInt(0x2_0000_0000);
     const list_buf = try stdx.dma.Buffer(PrpEntry).init(list_backing[0..], list_dma);
     const list = try prp.PrpList.wrap(list_buf, page_size);
 

@@ -177,7 +177,6 @@ pub const SubmissionQueue = struct {
     pub fn releaseCompletedCid(self: *SubmissionQueue, cid: Cid) PollError!void {
         self.cids.freeOne(cid.tag) catch |err| switch (err) {
             error.OutOfBounds, error.NotAllocated => return error.UnknownCommandId,
-            error.OutOfTags, error.AlreadyAllocated => unreachable,
         };
     }
 };

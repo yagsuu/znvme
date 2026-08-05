@@ -19,7 +19,7 @@ znvme depends on `zstdx` for every domain-neutral primitive. The import name is 
 
 **Sourcing rule.** If a primitive is domain-neutral — addresses, byte cursors, endian lanes, alignment helpers, bit sets, fixed-capacity containers, strong tags, bump/pool allocators, target-gated fences — it comes from `stdx`. znvme does not shadow, wrap, or reimplement it.
 
-**Ownership boundary.** znvme owns only NVMe-specific mechanics: wire types (SQE/CQE, register block, Identify structures), builders, views, the controller state machine, doorbell math, PRP construction, and completion status decoding. These types compose stdx primitives (`stdx.dma.Buffer(Sqe)` and `stdx.dma.Buffer(Cqe)` inside the submission and completion queues, `stdx.addr.DmaAddr` inside wire fields as native `u64` on the first-slice little-endian target or via `stdx.layout.Le(u64)` when a declaration needs explicit byte-order storage, `stdx.tags.TagAllocator.Bounded(CidDomain, u16)` inside the submission queue's outstanding-CID pool, `stdx.time.Clock.Monotonic(Backend)` inside `Controller` and the completion queue) but the composed type is znvme's.
+**Ownership boundary.** znvme owns only NVMe-specific mechanics: wire types (SQE/CQE, register block, Identify structures), builders, views, the controller state machine, doorbell math, PRP construction, and completion status decoding. These types compose stdx primitives (`stdx.dma.Buffer(Sqe)` and `stdx.dma.Buffer(Cqe)` inside the submission and completion queues, `stdx.addr.DMAAddr` inside wire fields as native `u64` on the first-slice little-endian target or via `stdx.layout.Le(u64)` when a declaration needs explicit byte-order storage, `stdx.tags.TagAllocator.Bounded(CidDomain, u16)` inside the submission queue's outstanding-CID pool, `stdx.time.Clock.Monotonic(Backend)` inside `Controller` and the completion queue) but the composed type is znvme's.
 
 **Missing primitives.** A primitive `znvme` needs and `stdx` does not provide is a gap, not a local implementation opportunity. Propose the primitive upstream against `../zstdx` — filing a spec draft in `../zstdx/docs/specs/` or an issue against the upstream repo — before landing the `znvme` spec that consumes it. `znvme` does not shadow, wrap, or reimplement a `stdx` primitive.
 
@@ -134,7 +134,7 @@ znvme defines no generic command registry, builder registry, or vtable over comm
 
 Use the baseline import and alias rules. Group 2 (external packages) contains exactly one entry — `const stdx = @import("stdx");` — unless the file uses no stdx surface. The same grouping applies to re-exports in `src/nvme.zig`.
 
-Prefer a top-level alias for the stdx surface actually used (`const DmaAddr = @import("stdx").addr.DmaAddr;`) over pulling the whole `stdx` namespace when only one type is needed. Multiple uses through the same subnamespace keep the subnamespace (`const bytes = @import("stdx").bytes;`).
+Prefer a top-level alias for the stdx surface actually used (`const DMAAddr = @import("stdx").addr.DMAAddr;`) over pulling the whole `stdx` namespace when only one type is needed. Multiple uses through the same subnamespace keep the subnamespace (`const bytes = @import("stdx").bytes;`).
 
 ## Comments
 

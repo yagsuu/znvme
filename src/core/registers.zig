@@ -4,17 +4,17 @@ const std = @import("std");
 
 const stdx = @import("stdx");
 
-const DmaAddr = stdx.addr.DmaAddr;
-const Mmio = stdx.io.Mmio;
-const Window = Mmio.Window64;
-const Reg32 = Mmio.Register(u32);
-const Reg64 = Mmio.Register(u64);
+const DMAAddr = stdx.addr.DMAAddr;
+const MMIO = stdx.io.MMIO;
+const Window = MMIO.Window64;
+const Reg32 = MMIO.Register(u32);
+const Reg64 = MMIO.Register(u64);
 
 /// Byte offset of the first doorbell (`SQ0TDBL`) within the register block.
 pub const doorbell_base_offset: usize = 0x1000;
 
 /// Typed accessor over a caller-owned MMIO window. Loads and stores go
-/// through `stdx.io.Mmio.Register(T)` volatile lanes; construction only
+/// through `stdx.io.MMIO.Register(T)` volatile lanes; construction only
 /// validates that the window is large enough for the fixed register block.
 pub const ControllerRegisters = struct {
     block: *volatile RegisterBlock,
@@ -391,13 +391,13 @@ pub const QueueBase = packed struct(u64) {
         return @bitCast(self);
     }
 
-    pub fn fromDmaAddr(addr: DmaAddr) Error!QueueBase {
+    pub fn fromDmaAddr(addr: DMAAddr) Error!QueueBase {
         if (!addr.isAligned(alignment)) return error.Misaligned;
         return @bitCast(addr.raw());
     }
 
-    pub fn dmaAddr(self: QueueBase) DmaAddr {
-        return DmaAddr.fromInt(self.raw());
+    pub fn dmaAddr(self: QueueBase) DMAAddr {
+        return DMAAddr.fromInt(self.raw());
     }
 
     comptime {

@@ -41,7 +41,7 @@ const Substrate = struct {
         const dbs = doorbell.Doorbells.fromRegisters(regs, zeroedCap());
         const ring = try stdx.dma.Buffer(Sqe).init(
             self.ring_backing[0..],
-            stdx.addr.DmaAddr.fromInt(0x1000),
+            stdx.addr.DMAAddr.fromInt(0x1000),
         );
         self.sq = try queue.SubmissionQueue.init(.{
             .qid = Qid.admin,
@@ -83,7 +83,7 @@ const PayloadFixture = struct {
     fn dataPointers(self: *PayloadFixture, dma_addr: u64) !DataPointers {
         const buf = try stdx.dma.Buffer(u8).init(
             self.backing[0..],
-            stdx.addr.DmaAddr.fromInt(dma_addr),
+            stdx.addr.DMAAddr.fromInt(dma_addr),
         );
         const page_size = try prp.PageSize.fromBytes(4096);
         return try DataPointers.fromContiguous(.{

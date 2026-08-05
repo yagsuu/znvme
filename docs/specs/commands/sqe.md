@@ -102,7 +102,7 @@ The 4-bit hole between FUSE and PSDT is a `reserved_10: u4 = 0` field so builder
 
 This spec adds no direct `stdx` dependency. Transitive `stdx` surfaces reach `Sqe` through znvme-owned types:
 
-- `stdx.addr.DmaAddr` — inside `core.prp.DataPointers.prp1`/`prp2`, embedded as `_dptr`;
+- `stdx.addr.DMAAddr` — inside `core.prp.DataPointers.prp1`/`prp2`, embedded as `_dptr`;
 - `stdx.tags.Tag(Domain, u16)` — inside `core.ids.Cid` and `core.ids.Nsid`, crossed at the accessors and `Init`.
 
 ## Approved API

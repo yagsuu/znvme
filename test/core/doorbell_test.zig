@@ -49,6 +49,7 @@ test "unit: submission doorbell offset for admin queue with packed stride" {
     const regs = try registers.ControllerRegisters.at(&bar_bytes);
     const db = Doorbells.fromRegisters(regs, zeroedCap(0));
     const sq = db.submissionQueue(Qid.admin);
+
     try testing.expectEqual(@as(usize, 0x1000), sq.offset());
 }
 
@@ -58,6 +59,7 @@ test "unit: completion doorbell offset for admin queue with packed stride" {
     const regs = try registers.ControllerRegisters.at(&bar_bytes);
     const db = Doorbells.fromRegisters(regs, zeroedCap(0));
     const cq = db.completionQueue(Qid.admin);
+
     try testing.expectEqual(@as(usize, 0x1004), cq.offset());
 }
 
@@ -67,6 +69,7 @@ test "unit: submission doorbell offset for io queue with packed stride" {
     const regs = try registers.ControllerRegisters.at(&bar_bytes);
     const db = Doorbells.fromRegisters(regs, zeroedCap(0));
     const sq = db.submissionQueue(Qid.from(1));
+
     try testing.expectEqual(@as(usize, 0x1008), sq.offset());
 }
 
@@ -76,6 +79,7 @@ test "unit: completion doorbell offset for io queue with packed stride" {
     const regs = try registers.ControllerRegisters.at(&bar_bytes);
     const db = Doorbells.fromRegisters(regs, zeroedCap(0));
     const cq = db.completionQueue(Qid.from(1));
+
     try testing.expectEqual(@as(usize, 0x100c), cq.offset());
 }
 
@@ -86,6 +90,7 @@ test "unit: doorbell offsets honor expanded stride" {
     const db = Doorbells.fromRegisters(regs, zeroedCap(2));
     const sq = db.submissionQueue(Qid.from(1));
     const cq = db.completionQueue(Qid.from(1));
+
     try testing.expectEqual(@as(usize, 0x1020), sq.offset());
     try testing.expectEqual(@as(usize, 0x1030), cq.offset());
 }
@@ -142,7 +147,7 @@ test "unit: completion queue setHead writes expected MMIO lane" {
 test "unit: doorbell write rejects short window" {
     // Goal: a BAR window sized to the register block minimum (0x1000 B) has no
     // room for any doorbell lane; setTail and setHead must surface
-    // Mmio.Window.Error.OutOfBounds instead of writing past the buffer.
+    // MMIO.Window.Error.OutOfBounds instead of writing past the buffer.
     var bar_bytes: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
     const regs = try registers.ControllerRegisters.at(&bar_bytes);
     const db = Doorbells.fromRegisters(regs, zeroedCap(0));

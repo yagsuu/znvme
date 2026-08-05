@@ -58,11 +58,11 @@ fn testBackoffPolicy() stdx.time.Backoff.Policy {
 }
 
 fn makeSqBuffer(backing: []Sqe) !stdx.dma.Buffer(Sqe) {
-    return try stdx.dma.Buffer(Sqe).init(backing, stdx.addr.DmaAddr.fromInt(0x1000));
+    return try stdx.dma.Buffer(Sqe).init(backing, stdx.addr.DMAAddr.fromInt(0x1000));
 }
 
 fn makeCqBuffer(backing: []Cqe) !stdx.dma.Buffer(Cqe) {
-    return try stdx.dma.Buffer(Cqe).init(backing, stdx.addr.DmaAddr.fromInt(0x2000));
+    return try stdx.dma.Buffer(Cqe).init(backing, stdx.addr.DMAAddr.fromInt(0x2000));
 }
 
 fn zeroedCap() registers.Cap {

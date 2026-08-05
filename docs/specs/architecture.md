@@ -77,7 +77,7 @@ Root promotion (`pub const Controller = controller.Controller;`) is allowed only
 - `core/ids.zig` owns `Nsid`, `Cid`, and `Qid` newtypes and bounds.
 - `core/dma.zig` is a delegation record only; `stdx.dma.Buffer(T)` is the DMA primitive.
 - `core/status.zig` owns CQE status decode and error taxonomy.
-- `core/registers.zig` owns the controller register block `extern struct`, typed `stdx.io.Mmio.Window` accessor, and layout assertions.
+- `core/registers.zig` owns the controller register block `extern struct`, typed `stdx.io.MMIO.Window` accessor, and layout assertions.
 - `core/doorbell.zig` owns doorbell stride and SQ/CQ doorbell addressing.
 - `core/prp.zig` owns PRP1, PRP2, and PRP-list construction.
 
@@ -192,9 +192,9 @@ A wire type and a semantic type never mix in a single type. A builder holds a se
 
 ### `core/`
 
-- `stdx.io.Mmio.Register(T)` and `stdx.io.Mmio.Window` back the controller register block, doorbell array, and typed MMIO accessors.
+- `stdx.io.MMIO.Register(T)` and `stdx.io.MMIO.Window` back the controller register block, doorbell array, and typed MMIO accessors.
 - `stdx.layout.Le(uN)` documents little-endian wire-field declarations.
-- `stdx.addr.DmaAddr` supplies device-visible addresses paired inside `stdx.dma.Buffer(T)`.
+- `stdx.addr.DMAAddr` supplies device-visible addresses paired inside `stdx.dma.Buffer(T)`.
 - `stdx.tags.Tag(Domain, u16)` supplies strong `Nsid`, `Cid`, and `Qid` identifiers.
 - `stdx.bytes` supplies byte cursors and checked offset access inside validators.
 
@@ -210,7 +210,7 @@ A wire type and a semantic type never mix in a single type. A builder holds a se
 
 - `stdx.layout.Le(uN)` documents SQE/CQE little-endian dword declarations.
 - `stdx.tags.Tag(Domain, u16)` carries identifiers across command boundaries such as the `Cid` SQE/CQE round-trip.
-- `stdx.addr.DmaAddr` supplies PRP1 and PRP2 field values.
+- `stdx.addr.DMAAddr` supplies PRP1 and PRP2 field values.
 - Encoders write `buffer.dmaAddr().raw()` through the wire field's dword lane.
 
 ### `identify/`
@@ -226,11 +226,11 @@ Every module builds and tests on the host. There is no freestanding-only code in
 
 ### Register substrate
 
-Tests construct a `stdx.io.Mmio.Window` over a plain `[N]u8 align(@alignOf(u64))` scratch buffer. The buffer is real backing memory, not a mock. On target, the same typed accessors alias MMIO through `stdx.io.Mmio.Window`. Tests read and write through the typed accessor and inspect the underlying bytes.
+Tests construct a `stdx.io.MMIO.Window` over a plain `[N]u8 align(@alignOf(u64))` scratch buffer. The buffer is real backing memory, not a mock. On target, the same typed accessors alias MMIO through `stdx.io.MMIO.Window`. Tests read and write through the typed accessor and inspect the underlying bytes.
 
 ### DMA substrate
 
-`stdx.dma.Buffer(T)` pairs a caller-owned host slice with a fabricated `stdx.addr.DmaAddr` in tests (`stdx.addr.DmaAddr.fromInt(...)`). Tests treat the DMA address as opaque. `znvme` never dereferences a DMA address.
+`stdx.dma.Buffer(T)` pairs a caller-owned host slice with a fabricated `stdx.addr.DMAAddr` in tests (`stdx.addr.DMAAddr.fromInt(...)`). Tests treat the DMA address as opaque. `znvme` never dereferences a DMA address.
 
 ### Time substrate
 

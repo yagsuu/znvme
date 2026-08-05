@@ -67,23 +67,28 @@ test "unit: identify controller offsets match NVMe Figure 275" {
 
 test "unit: identify controller validate rejects buffer shorter than 4096 with ShortBuffer" {
     var b: [4095]u8 align(4) = @splat(0);
+
     try testing.expectError(error.ShortBuffer, IdentifyController.validate(&b));
 }
 
 test "unit: identify controller validate rejects misaligned byte pointer with Misaligned" {
     var b: [4097]u8 align(4) = @splat(0);
+
     try testing.expectError(error.Misaligned, IdentifyController.validate(b[1..4097]));
 }
 
 test "unit: identify controller validate accepts exact 4096-byte buffer" {
     var b: [4096]u8 align(4) = @splat(0);
+
     const id = try IdentifyController.validate(&b);
+
     try testing.expectEqual(@as(u16, 0), id.vendorId());
 }
 
 test "unit: identify controller accessors work on a typed pointer without going through validate" {
     var t: IdentifyController = .{};
     t._vid = 0xBEEF;
+
     try testing.expectEqual(@as(u16, 0xBEEF), (&t).vendorId());
 }
 

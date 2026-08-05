@@ -7,10 +7,10 @@ const stdx = @import("stdx");
 const ids = @import("ids.zig");
 const registers = @import("registers.zig");
 
-const Mmio = stdx.io.Mmio;
+const MMIO = stdx.io.MMIO;
 const Qid = ids.Qid;
-const Window = Mmio.Window64;
-const Reg32 = Mmio.Register(u32);
+const Window = MMIO.Window64;
+const Reg32 = MMIO.Register(u32);
 
 pub const base_offset: usize = registers.doorbell_base_offset;
 

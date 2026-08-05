@@ -16,7 +16,7 @@ This spec owns:
 - type-owned size, alignment, and bit-size assertions for `CAP`, `VS`, `CC`, `CSTS`, `AQA`, `ASQ`, and `ACQ` value wrappers;
 - read methods for `CAP`, `VS`, `CC`, `CSTS`, `AQA`, `ASQ`, and `ACQ`;
 - write methods for `CAP`, `VS`, `CC`, `CSTS`, `AQA`, `ASQ`, and `ACQ`;
-- exposure of the underlying `stdx.io.Mmio.Window` for the doorbell spec.
+- exposure of the underlying `stdx.io.MMIO.Window` for the doorbell spec.
 
 ## Deferred scope and non-goals
 
@@ -58,12 +58,12 @@ The fixed overlay ends exactly at `0x1000`. Doorbell registers are not embedded 
 
 ## stdx composition
 
-- `RegisterBlock` uses `stdx.io.Mmio.Register(u32)` and `stdx.io.Mmio.Register(u64)` lanes.
-- `ControllerRegisters` stores a `stdx.io.Mmio.Window` so `core/doorbell.zig` can request runtime-computed `u32` doorbell lanes.
-- `QueueBase.fromDmaAddr` consumes `stdx.addr.DmaAddr`; no physical-address type appears in znvme's register API.
+- `RegisterBlock` uses `stdx.io.MMIO.Register(u32)` and `stdx.io.MMIO.Register(u64)` lanes.
+- `ControllerRegisters` stores a `stdx.io.MMIO.Window` so `core/doorbell.zig` can request runtime-computed `u32` doorbell lanes.
+- `QueueBase.fromDmaAddr` consumes `stdx.addr.DMAAddr`; no physical-address type appears in znvme's register API.
 - `stdx.barrier.mmio.*` is not called here. Ordering belongs to the controller-init and doorbell specs that know the protocol transition.
 
-`stdx.io.Mmio.Register` access provides volatile compiler ordering only. It does not emit ISA fences and does not order DMA payloads by itself.
+`stdx.io.MMIO.Register` access provides volatile compiler ordering only. It does not emit ISA fences and does not order DMA payloads by itself.
 
 ## Approved API
 
@@ -75,29 +75,29 @@ const std = @import("std");
 
 const stdx = @import("stdx");
 
-const DmaAddr = stdx.addr.DmaAddr;
-const Mmio = stdx.io.Mmio;
-const Reg32 = Mmio.Register(u32);
-const Reg64 = Mmio.Register(u64);
+const DMAAddr = stdx.addr.DMAAddr;
+const MMIO = stdx.io.MMIO;
+const Reg32 = MMIO.Register(u32);
+const Reg64 = MMIO.Register(u64);
 
 pub const doorbell_base_offset: usize = 0x1000;
 
 pub const ControllerRegisters = struct {
     block: *volatile RegisterBlock,
-    window: Mmio.Window,
+    window: MMIO.Window,
 
     pub const Error = error{OutOfBounds};
 
-    pub fn at(bytes: []align(Mmio.Window.min_align) volatile u8) Error!ControllerRegisters {
+    pub fn at(bytes: []align(MMIO.Window.min_align) volatile u8) Error!ControllerRegisters {
         if (bytes.len < doorbell_base_offset) return error.OutOfBounds;
 
         return .{
             .block = @ptrCast(bytes.ptr),
-            .window = Mmio.Window.wrap(bytes),
+            .window = MMIO.Window.wrap(bytes),
         };
     }
 
-    pub fn mmioWindow(self: ControllerRegisters) Mmio.Window {
+    pub fn mmioWindow(self: ControllerRegisters) MMIO.Window {
         return self.window;
     }
 
@@ -186,7 +186,7 @@ pub const RegisterBlock = extern struct {
         std.debug.assert(@offsetOf(Self, "asq") == 0x0028);
         std.debug.assert(@offsetOf(Self, "acq") == 0x0030);
         std.debug.assert(@sizeOf(Self) == doorbell_base_offset);
-        std.debug.assert(@alignOf(Self) == Mmio.Window.min_align);
+        std.debug.assert(@alignOf(Self) == MMIO.Window.min_align);
     }
 };
 
@@ -436,13 +436,13 @@ pub const QueueBase = packed struct(u64) {
         return @bitCast(self);
     }
 
-    pub fn fromDmaAddr(addr: DmaAddr) Error!QueueBase {
+    pub fn fromDmaAddr(addr: DMAAddr) Error!QueueBase {
         if (!addr.isAligned(alignment)) return error.Misaligned;
         return @bitCast(addr.raw());
     }
 
-    pub fn dmaAddr(self: QueueBase) DmaAddr {
-        return DmaAddr.fromInt(self.raw());
+    pub fn dmaAddr(self: QueueBase) DMAAddr {
+        return DMAAddr.fromInt(self.raw());
     }
 
     comptime {

@@ -39,8 +39,8 @@ This spec does not own:
 
 Test code composes only the caller-facing `stdx` primitives znvme itself consumes:
 
-- `stdx.dma.Buffer(T).init(&heap_slice, stdx.addr.DmaAddr.fromInt(...))` — real caller-owned host storage paired with a fabricated DMA address; tests treat the DMA address as opaque;
-- `stdx.io.Mmio.Window` — backed by a real `[N]u8 align(@alignOf(u64))` (or `align(Mmio.Window.min_align)`) scratch buffer, exercised through the same typed accessors that alias MMIO on target;
+- `stdx.dma.Buffer(T).init(&heap_slice, stdx.addr.DMAAddr.fromInt(...))` — real caller-owned host storage paired with a fabricated DMA address; tests treat the DMA address as opaque;
+- `stdx.io.MMIO.Window` — backed by a real `[N]u8 align(@alignOf(u64))` (or `align(MMIO.Window.min_align)`) scratch buffer, exercised through the same typed accessors that alias MMIO on target;
 - `stdx.time.Clock.Monotonic(Backend)` with a test-supplied counter backend whose `now()` advances deterministically per call;
 - `stdx.time.Deadline`, `stdx.time.Duration`, `stdx.time.Backoff` — composed exactly the way `docs/specs/controller/init.md` and `docs/specs/controller/queue.md` compose them at runtime;
 - `stdx.barrier.mmio.*` and `stdx.barrier.dma.*` — execute their real x86_64 lowering on the host test target; tests assert API shape and referential mapping through the `stdx` spec, not hardware ordering;
@@ -56,7 +56,7 @@ Register-touching tests allocate a `[N]u8 align(@alignOf(u64))` scratch buffer, 
 
 ### DMA substrate
 
-DMA-touching tests wrap caller-owned host storage in `stdx.dma.Buffer(T).init(&heap_slice, stdx.addr.DmaAddr.fromInt(fake_iova))`. The fake IOVA is opaque; znvme never dereferences it. On target, zfw supplies an identity-mapped page or an IOMMU-installed IOVA.
+DMA-touching tests wrap caller-owned host storage in `stdx.dma.Buffer(T).init(&heap_slice, stdx.addr.DMAAddr.fromInt(fake_iova))`. The fake IOVA is opaque; znvme never dereferences it. On target, zfw supplies an identity-mapped page or an IOMMU-installed IOVA.
 
 ### Time substrate
 
@@ -75,7 +75,7 @@ Queue-touching tests compose a `SubmissionQueue`, `CompletionQueue(Backend)`, or
 Tests exercise landed code. The following are prohibited:
 
 - a stand-in for `ControllerRegisters`, `SubmissionQueue`, `CompletionQueue(Backend)`, `Pair(Backend)`, any `Sqe` / `Cqe` accessor, any command builder, or any Identify view;
-- a wrapper that intercepts `stdx.io.Mmio.Register` loads or stores;
+- a wrapper that intercepts `stdx.io.MMIO.Register` loads or stores;
 - a wrapper that intercepts `stdx.barrier.*` calls;
 - a wall-clock time source in place of the injected monotonic backend.
 
@@ -136,7 +136,7 @@ Approved:
 
 - `std.testing` and its helpers (`expectEqual`, `expectError`, `expect`, ...);
 - `std.mem` compile-time helpers permitted by the architecture spec, plus `std.mem.eql` on comptime-known slices;
-- heap-allocated scratch buffers used only to back `stdx.dma.Buffer(T)`, `stdx.io.Mmio.Window`, CID bitmaps, and fixture bytes;
+- heap-allocated scratch buffers used only to back `stdx.dma.Buffer(T)`, `stdx.io.MMIO.Window`, CID bitmaps, and fixture bytes;
 - fixture-regeneration helpers under `test/fixtures/**` that compose znvme's public builders;
 - local test-only backend types (counter clocks, scripted CSTS providers) declared in the same `_test.zig` file that consumes them.
 

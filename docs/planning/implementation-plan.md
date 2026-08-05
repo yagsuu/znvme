@@ -73,10 +73,10 @@ Every slice = `src/**/<name>.zig` + `test/**/<name>_test.zig` landing together.
   - Imports: `std`.
   - Tests: `test/core/status_test.zig`.
 - **A3 `src/core/registers.zig`** — `docs/specs/core/registers.md`.
-  - Imports: `std`, `stdx.io.Mmio`, `stdx.addr.DmaAddr`.
+  - Imports: `std`, `stdx.io.MMIO`, `stdx.addr.DMAAddr`.
   - Tests: `test/core/registers_test.zig`.
 - **A4 `src/core/prp.zig`** — `docs/specs/core/prp.md`.
-  - Imports: `std`, `stdx.dma`, `stdx.addr.DmaAddr`.
+  - Imports: `std`, `stdx.dma`, `stdx.addr.DMAAddr`.
   - Tests: `test/core/prp_test.zig`.
 - **A5 `src/identify/controller.zig`** — `docs/specs/identify/controller.md`.
   - Imports: `std`.

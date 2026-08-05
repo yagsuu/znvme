@@ -4,7 +4,7 @@ Status: Approved.
 
 `PrpEntry`, `DataPointers`, `PageSize`, `PrpList`, and contiguous PRP construction own the PRP1/PRP2 data-pointer shape used by NVMe commands. This spec covers descriptor construction only: caller-owned DMA memory goes in, PRP data-pointer lanes and optional PRP-list entries come out.
 
-PRP construction never allocates, maps, pins, flushes, invalidates, rings a doorbell, or chooses a command opcode. It composes `stdx.dma.Buffer(T)` and `stdx.addr.DmaAddr` from `docs/specs/core/dma.md`.
+PRP construction never allocates, maps, pins, flushes, invalidates, rings a doorbell, or chooses a command opcode. It composes `stdx.dma.Buffer(T)` and `stdx.addr.DMAAddr` from `docs/specs/core/dma.md`.
 
 ## Owned scope
 
@@ -55,7 +55,7 @@ This spec does not own:
 
 ## znvme behavior
 
-`PrpEntry` stores the PRP lane as a native `u64` on the first-slice little-endian target. Wire encoding writes `stdx.addr.DmaAddr.raw()` into that field; it never pointer-casts DMA addresses into command bytes.
+`PrpEntry` stores the PRP lane as a native `u64` on the first-slice little-endian target. Wire encoding writes `stdx.addr.DMAAddr.raw()` into that field; it never pointer-casts DMA addresses into command bytes.
 
 First-slice `PageSize` accepts only power-of-two byte sizes `>= 4096`.
 
@@ -63,7 +63,7 @@ Controller initialization owns deriving `PageSize` from `CAP.MPSMIN`, `CAP.MPSMA
 
 Empty payloads are rejected by PRP construction. A command with no data transfer does not need PRP construction.
 
-`PRP1` is always the payload buffer's base `DmaAddr`.
+`PRP1` is always the payload buffer's base `DMAAddr`.
 
 `IoQueueBase` is the SQE-side queue-base DMA pointer for Create I/O SQ/CQ with `PC=1`. It carries only `PRP1` and is distinct from `core.registers.QueueBase`, which is the register-block value type used to store `ASQ`/`ACQ`. `IoQueueBase.fromContiguous(buffer, page_size)` requires the queue-base buffer to be non-empty and aligned to the caller's configured page size. The admin builder writes `PRP1 = IoQueueBase.prp1` and `PRP2 = 0`; chained or PRP-list queue bases are not supported.
 
@@ -123,7 +123,7 @@ const std = @import("std");
 
 const stdx = @import("stdx");
 
-const DmaAddr = stdx.addr.DmaAddr;
+const DMAAddr = stdx.addr.DMAAddr;
 
 pub const Error = error{
     EmptyPayload,
@@ -143,7 +143,7 @@ pub const PrpEntry = extern struct {
 
     pub const zero: PrpEntry = .{ .value = 0 };
 
-    pub fn fromDmaAddr(addr: DmaAddr) PrpEntry {
+    pub fn fromDmaAddr(addr: DMAAddr) PrpEntry {
         return .{ .value = addr.raw() };
     }
 
@@ -151,7 +151,7 @@ pub const PrpEntry = extern struct {
         return self.value;
     }
 
-    pub fn dmaAddr(self: PrpEntry) DmaAddr {
+    pub fn dmaAddr(self: PrpEntry) DMAAddr {
         return .fromInt(self.raw());
     }
 
@@ -263,15 +263,15 @@ pub const PageSize = struct {
         return .{ .bytes = bytes };
     }
 
-    pub fn offset(self: PageSize, addr: DmaAddr) u64 {
+    pub fn offset(self: PageSize, addr: DMAAddr) u64 {
         return addr.raw() & (self.bytes - 1);
     }
 
-    pub fn isPageAligned(self: PageSize, addr: DmaAddr) bool {
+    pub fn isPageAligned(self: PageSize, addr: DMAAddr) bool {
         return self.offset(addr) == 0;
     }
 
-    pub fn remainingInPage(self: PageSize, addr: DmaAddr) u64 {
+    pub fn remainingInPage(self: PageSize, addr: DMAAddr) u64 {
         return self.bytes - self.offset(addr);
     }
 

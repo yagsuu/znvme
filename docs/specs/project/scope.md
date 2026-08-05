@@ -25,7 +25,7 @@ Public examples use `const nvme = @import("nvme");` and `const stdx = @import("s
 
 `znvme` implements only the NVMe protocol surface a firmware boot reader needs to bring an NVMe controller from BAR-mapped state to reading LBAs from a namespace.
 
-- Controller register-block layout uses typed `stdx.io.Mmio.Window` accessors and compile-time size, alignment, offset, and bit-size assertions for NVMe-defined fields.
+- Controller register-block layout uses typed `stdx.io.MMIO.Window` accessors and compile-time size, alignment, offset, and bit-size assertions for NVMe-defined fields.
 - CC/CSTS enable, ready, shutdown, and CFS state transitions follow the NVMe controller register semantics.
 - The initialization state machine runs over an injected `stdx.time.Clock.Monotonic(Backend)`.
 - The queue model is one admin queue pair plus N caller-owned polled I/O queue pairs, where N is negotiated via Set Features (Number of Queues).
@@ -52,7 +52,7 @@ The shared wire, layout assertions, and byte-window validators are the seam betw
 
 ### znvme owns
 
-- The controller register block as an `extern struct` accessed through typed `stdx.io.Mmio.Window`/`stdx.io.Mmio.Register(T)` views.
+- The controller register block as an `extern struct` accessed through typed `stdx.io.MMIO.Window`/`stdx.io.MMIO.Register(T)` views.
 - Register layout assertions for `@sizeOf`, `@alignOf`, `@offsetOf` per NVMe-defined byte offset, and `@bitSizeOf` per packed field.
 - The CC.EN → CSTS.RDY handshake, CC.SHN → CSTS.SHST shutdown, and CSTS.CFS handling required by NVMe controller semantics.
 - The controller initialization state machine over an injected `stdx.time.Clock.Monotonic(Backend)`.
@@ -69,7 +69,7 @@ The shared wire, layout assertions, and byte-window validators are the seam betw
 ### The caller owns
 
 - PCI/ECAM enumeration and BAR discovery.
-- The MMIO mapping; the caller supplies a `stdx.io.Mmio.Window` covering the controller register aperture.
+- The MMIO mapping; the caller supplies a `stdx.io.MMIO.Window` covering the controller register aperture.
 - DMA-capable memory provisioning; `znvme` owns no memory.
 - Queue and transfer storage supplied through `stdx.dma.Buffer(T)` (`../zstdx/docs/specs/dma/buffer.md`).
 - UEFI protocol ABI types and protocol installation (`EFI_BLOCK_IO_PROTOCOL`, `EFI_DISK_IO_PROTOCOL`, ...).
@@ -92,7 +92,7 @@ The shared wire, layout assertions, and byte-window validators are the seam betw
 
 Consumed `stdx` surfaces:
 
-- `stdx.io.Mmio.Register(T)` / `stdx.io.Mmio.Window` — controller register block, doorbell array, and typed MMIO access.
+- `stdx.io.MMIO.Register(T)` / `stdx.io.MMIO.Window` — controller register block, doorbell array, and typed MMIO access.
 - `stdx.barrier.mmio.*` — SQ doorbell release and CSTS acquire ordering.
 - `stdx.barrier.dma.*` — CQE phase-read acquire ordering.
 - `stdx.time.Deadline` / `stdx.time.Duration` / `stdx.time.Clock.Monotonic(Backend)` / `stdx.time.Backoff` — RDY handshake and completion timeouts.
@@ -101,7 +101,7 @@ Consumed `stdx` surfaces:
 - First-slice code targets little-endian machines and assumes native little-endian loads for wire decoding.
 - `stdx.bytes.Cursor` / `stdx.bytes.load*` — Identify structure validation over caller byte buffers.
 - `stdx.dma.Buffer(T)` — caller-owned DMA-visible storage for queue pairs, PRP payloads, PRP list pages, and Identify response buffers.
-- `stdx.addr.DmaAddr` — device-visible address paired inside `stdx.dma.Buffer(T)`.
+- `stdx.addr.DMAAddr` — device-visible address paired inside `stdx.dma.Buffer(T)`.
 - PRP1, PRP2, ASQ, and ACQ encoders write `dmaAddr().raw()` into the corresponding NVMe wire dword/qword lane.
 - `stdx.tags.Tag(Domain, u16)` — the strong-typed identifier used inside `Nsid`, `Cid`, and `Qid`.
 - `stdx.tags.TagAllocator.Bounded(CidDomain, u16)` — outstanding-CID pool backing the submission queue, over a caller-owned bitmap.
@@ -154,7 +154,7 @@ Any planning entry moved from `Queue` to `Approved` in `docs/planning/spec-queue
 - `docs/specs/core/ids.md` — `Nsid`, `Cid`, and `Qid` newtypes and bounds.
 - `docs/specs/core/dma.md` — delegation record; DMA primitives remain owned by `stdx.dma.*`.
 - `docs/specs/core/status.md` — CQE status decode and error taxonomy.
-- `docs/specs/core/registers.md` — controller register-block extern layout, typed `stdx.io.Mmio.Window` accessor, and ABI assertions.
+- `docs/specs/core/registers.md` — controller register-block extern layout, typed `stdx.io.MMIO.Window` accessor, and ABI assertions.
 - `docs/specs/core/doorbell.md` — doorbell stride and SQ/CQ doorbell addressing.
 - `docs/specs/core/prp.md` — PRP1, PRP2, and PRP-list construction.
 - `docs/specs/commands/sqe.md` — Submission Queue Entry wire layout.

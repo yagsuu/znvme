@@ -88,9 +88,9 @@ const stdx = @import("stdx");
 const ids = @import("ids.zig");
 const registers = @import("registers.zig");
 
-const Mmio = stdx.io.Mmio;
+const MMIO = stdx.io.MMIO;
 const Qid = ids.Qid;
-const Reg32 = Mmio.Register(u32);
+const Reg32 = MMIO.Register(u32);
 
 pub const base_offset: usize = registers.doorbell_base_offset;
 
@@ -131,10 +131,10 @@ pub const Value = packed struct(u32) {
 };
 
 pub const Doorbells = struct {
-    window: Mmio.Window,
+    window: MMIO.Window,
     stride: Stride,
 
-    pub fn init(window: Mmio.Window, stride: Stride) Doorbells {
+    pub fn init(window: MMIO.Window, stride: Stride) Doorbells {
         return .{ .window = window, .stride = stride };
     }
 
@@ -154,11 +154,11 @@ pub const Doorbells = struct {
 };
 
 pub const SubmissionQueueDoorbell = struct {
-    window: Mmio.Window,
+    window: MMIO.Window,
     stride: Stride,
     qid: Qid,
 
-    pub const Error = Mmio.Window.Error;
+    pub const Error = MMIO.Window.Error;
 
     pub fn offset(self: SubmissionQueueDoorbell) usize {
         return doorbellOffset(self.qid, .submission_tail, self.stride);
@@ -176,11 +176,11 @@ pub const SubmissionQueueDoorbell = struct {
 };
 
 pub const CompletionQueueDoorbell = struct {
-    window: Mmio.Window,
+    window: MMIO.Window,
     stride: Stride,
     qid: Qid,
 
-    pub const Error = Mmio.Window.Error;
+    pub const Error = MMIO.Window.Error;
 
     pub fn offset(self: CompletionQueueDoorbell) usize {
         return doorbellOffset(self.qid, .completion_head, self.stride);
@@ -215,7 +215,7 @@ comptime {
 
 ## Boundary rules
 
-`Doorbells` borrows a `stdx.io.Mmio.Window`; it owns no MMIO mapping and no queue memory.
+`Doorbells` borrows a `stdx.io.MMIO.Window`; it owns no MMIO mapping and no queue memory.
 
 `Doorbells.submissionQueue(qid)` and `Doorbells.completionQueue(qid)` return small borrowed views and allocate nothing.
 
@@ -231,7 +231,7 @@ No API reads doorbell registers.
 
 - `Stride.fromDstrd` accepts every `u4` value. The maximum NVMe value still fits `usize` on the required `x86_64` target.
 - `Value.fromIndex` accepts every `u16` value. Queue capacity validation belongs to `controller/queue.md`.
-- `SubmissionQueueDoorbell.setTail` and `CompletionQueueDoorbell.setHead` return `stdx.io.Mmio.Window.Error` if the backing MMIO window is too short or unexpectedly misaligned.
+- `SubmissionQueueDoorbell.setTail` and `CompletionQueueDoorbell.setHead` return `stdx.io.MMIO.Window.Error` if the backing MMIO window is too short or unexpectedly misaligned.
 - The per-queue view constructors and offset helper use a debug assertion for `Qid.reserved_max`; this is a programmer error after queue-id validation.
 
 ## Behavior contract
@@ -243,8 +243,8 @@ No API reads doorbell registers.
 | `Doorbells.init` / `fromRegisters` | never | never | O(1) | borrowed value | none | infallible |
 | `submissionQueue` / `completionQueue` | never | never | O(1) | borrowed value | none | debug assert on reserved QID |
 | `SubmissionQueueDoorbell.offset` / `CompletionQueueDoorbell.offset` | never | never | O(1) | value type | none | debug assert on reserved QID |
-| `SubmissionQueueDoorbell.setTail` | never | never | O(1) via `Mmio.Window` | caller-serialized per SQ | `mmio.release` then volatile store | `Mmio.Window.Error` |
-| `CompletionQueueDoorbell.setHead` | never | never | O(1) via `Mmio.Window` | caller-serialized per CQ | volatile store only | `Mmio.Window.Error` |
+| `SubmissionQueueDoorbell.setTail` | never | never | O(1) via `MMIO.Window` | caller-serialized per SQ | `mmio.release` then volatile store | `MMIO.Window.Error` |
+| `CompletionQueueDoorbell.setHead` | never | never | O(1) via `MMIO.Window` | caller-serialized per CQ | volatile store only | `MMIO.Window.Error` |
 
 ## Required tests
 

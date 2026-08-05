@@ -24,12 +24,22 @@ test "malformed: identify buffer shorter than structure" { ... }
 test "roundtrip: read command encodes and decodes through SQE view" { ... }
 ```
 
+## Test layout
+
+Structure each test in this order:
+
+1. Fixture state.
+2. Semantic input and action.
+3. Postcondition assertions.
+
+Separate adjacent phases with one blank line. Keep backing storage and other fixture state before values specific to the behavior under test. Keep mutations with the action phase.
+
 ## Host-test model
 
 Every module under `core/`, `controller/`, `commands/`, `identify/` builds and tests on the host. There is no `freestanding`-only code in the test path.
 
 - **Registers** are exercised through the typed accessor backed by a plain `[]u8`. That is a real backing buffer, not a mock; on-target the same accessor aliases MMIO.
-- **DMA** is a caller-owned slice paired with a fabricated `stdx.addr.DmaAddr` (`stdx.dma.Buffer(T).init(&heap_slice, DmaAddr.fromInt(...))`); on-target zfw passes an identity-mapped page or an IOMMU IOVA.
+- **DMA** is a caller-owned slice paired with a fabricated `stdx.addr.DMAAddr` (`stdx.dma.Buffer(T).init(&heap_slice, DMAAddr.fromInt(...))`); on-target zfw passes an identity-mapped page or an IOMMU IOVA.
 - **Time** is an injected monotonic source the test drives deterministically; no test busy-waits on a real clock.
 
 ## No mocks

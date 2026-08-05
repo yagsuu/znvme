@@ -36,6 +36,7 @@ test "unit: cqe default value is all-zero" {
     // A default-constructed `Cqe{}` reads zero on every underscored storage
     // lane — establishes the "blank slot" invariant callers rely on.
     const c: Cqe = .{};
+
     try testing.expectEqual(@as(u32, 0), c._dw0);
     try testing.expectEqual(@as(u32, 0), c._dw1);
     try testing.expectEqual(@as(u16, 0), c._sqhd);
@@ -49,8 +50,10 @@ test "unit: cqe accessors decode dw0 and dw1" {
     // `dw1()`; the accessors are pure typed loads of the underscored lanes.
     const dw0_values = [_]u32{ 0x0000_0000, 0xDEAD_BEEF, 0xFFFF_FFFF, 0x1234_5678 };
     const dw1_values = [_]u32{ 0xFFFF_FFFF, 0x0000_0000, 0xCAFE_F00D, 0x8765_4321 };
+
     for (dw0_values, dw1_values) |v0, v1| {
         const c: Cqe = .{ ._dw0 = v0, ._dw1 = v1 };
+
         try testing.expectEqual(v0, c.dw0());
         try testing.expectEqual(v1, c.dw1());
     }
@@ -59,69 +62,78 @@ test "unit: cqe accessors decode dw0 and dw1" {
 test "unit: cqe sqhd returns raw u16" {
     // SQHD is an intra-SQ offset, not an identifier — the accessor returns
     // the raw u16 unchanged for representative low, mid-range, and high values.
+
     for ([_]u16{ 0, 0x8000, 0xFFFF }) |v| {
         const c: Cqe = .{ ._sqhd = v };
+
         try testing.expectEqual(v, c.sqhd());
     }
 }
 
-test "unit: cqe sqid wraps through Qid.from" {
-    // sqid() wraps the raw u16 through Qid.from — every u16 is representable
-    // (admin 0, an IO qid, and reserved_max 0xFFFF).
+test "unit: cqe sqid wraps raw values through Qid.from" {
     const cases = [_]u16{ 0x0000, 0x0007, 0xFFFF };
-    for (cases) |v| {
-        const c: Cqe = .{ ._sqid = v };
-        const q = c.sqid();
-        try testing.expectEqual(v, q.raw());
-        try testing.expectEqual(Qid.from(v).raw(), q.raw());
+
+    for (cases) |value| {
+        const cqe_value: Cqe = .{ ._sqid = value };
+
+        try testing.expectEqual(value, cqe_value.sqid().raw());
+        try testing.expectEqual(Qid.from(value).raw(), cqe_value.sqid().raw());
     }
-    // Spot-check identity predicates on the boundary values.
+}
+
+test "unit: cqe sqid preserves admin io and reserved identities" {
     const admin: Cqe = .{ ._sqid = 0x0000 };
-    try testing.expectEqual(true, admin.sqid().isAdmin());
     const io: Cqe = .{ ._sqid = 0x0007 };
-    try testing.expectEqual(true, io.sqid().isIoQueue());
-    const rmax: Cqe = .{ ._sqid = 0xFFFF };
-    try testing.expectEqual(true, rmax.sqid().isReserved());
+    const reserved: Cqe = .{ ._sqid = 0xFFFF };
+
+    try testing.expect(admin.sqid().isAdmin());
+    try testing.expect(io.sqid().isIoQueue());
+    try testing.expect(reserved.sqid().isReserved());
 }
 
-test "unit: cqe cid wraps through Cid.from" {
-    // cid() wraps the raw u16 through Cid.from — every u16 is representable.
-    for ([_]u16{ 0x0000, 0x7FFF, 0xFFFF }) |v| {
-        const c: Cqe = .{ ._cid = v };
-        try testing.expectEqual(v, c.cid().raw());
-        try testing.expectEqual(Cid.from(v).raw(), c.cid().raw());
+test "unit: cqe cid wraps raw values through Cid.from" {
+    const cases = [_]u16{ 0x0000, 0x7FFF, 0xFFFF };
+
+    for (cases) |value| {
+        const cqe_value: Cqe = .{ ._cid = value };
+
+        try testing.expectEqual(value, cqe_value.cid().raw());
+        try testing.expectEqual(Cid.from(value).raw(), cqe_value.cid().raw());
     }
 }
 
-test "unit: cqe status wraps through CompletionStatus.from" {
-    // status() must produce identical decodes to CompletionStatus.from(raw)
-    // across success-with-phase, a generic failure, and a reserved-SCT value.
-    const success_raw = CompletionStatus.success(true).raw();
-    const success_c: Cqe = .{ ._status = success_raw };
-    try testing.expectEqual(success_raw, success_c.status().raw());
-    try testing.expectEqual(true, success_c.status().phase());
-    try testing.expectEqual(true, success_c.status().isSuccess());
+test "unit: cqe status preserves generic success" {
+    const raw = CompletionStatus.success(true).raw();
+    const cqe_value: Cqe = .{ ._status = raw };
 
-    const fail_raw = CompletionStatus.genericFailure(true, .invalid_field).raw();
-    const fail_c: Cqe = .{ ._status = fail_raw };
-    try testing.expectEqual(fail_raw, fail_c.status().raw());
-    try testing.expectEqual(false, fail_c.status().isSuccess());
-    switch (fail_c.status().kind()) {
-        .generic => |gc| try testing.expectEqual(CompletionStatus.GenericCode.invalid_field, gc),
+    try testing.expectEqual(raw, cqe_value.status().raw());
+    try testing.expect(cqe_value.status().phase());
+    try testing.expect(cqe_value.status().isSuccess());
+}
+
+test "unit: cqe status preserves generic failure classification" {
+    const raw = CompletionStatus.genericFailure(true, .invalid_field).raw();
+    const cqe_value: Cqe = .{ ._status = raw };
+
+    try testing.expectEqual(raw, cqe_value.status().raw());
+    try testing.expect(!cqe_value.status().isSuccess());
+    switch (cqe_value.status().kind()) {
+        .generic => |code| try testing.expectEqual(CompletionStatus.GenericCode.invalid_field, code),
         else => return error.WrongKind,
     }
+}
 
-    // Reserved SCT (raw code_type = 4) — accessors preserve the raw bits and
-    // classify the failure under `.reserved_code_type`.
-    const reserved = CompletionStatus.init(.{
+test "unit: cqe status preserves reserved code type" {
+    const status = CompletionStatus.init(.{
         .phase = false,
         .code_type = @enumFromInt(@as(u3, 4)),
         .code = 0x10,
     });
-    const reserved_c: Cqe = .{ ._status = reserved.raw() };
-    try testing.expectEqual(reserved.raw(), reserved_c.status().raw());
-    switch (reserved_c.status().kind()) {
-        .reserved_code_type => |v| try testing.expectEqual(@as(u3, 4), v),
+    const cqe_value: Cqe = .{ ._status = status.raw() };
+
+    try testing.expectEqual(status.raw(), cqe_value.status().raw());
+    switch (cqe_value.status().kind()) {
+        .reserved_code_type => |value| try testing.expectEqual(@as(u3, 4), value),
         else => return error.WrongKind,
     }
 }
