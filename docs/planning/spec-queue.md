@@ -36,7 +36,6 @@ Drafts must not include: rejected alternatives unless the user asks for comparis
 - `docs/guidelines/zig.md`
 - `docs/guidelines/conventions.md`
 - `docs/guidelines/testing.md`
-- `docs/decisions.md`
 - `docs/specs/project/scope.md`
 - `docs/specs/architecture.md`
 - `docs/specs/core/ids.md`

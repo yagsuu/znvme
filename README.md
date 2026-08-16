@@ -1,57 +1,56 @@
 # znvme
 
-A Zig-native NVMe 2.0 protocol library.
+`znvme` is an allocation-free Zig library for NVMe 2.0 wire protocol and controller mechanics.
 
-`znvme` owns the wire types, register layout, queue mechanics, and command
-builders defined by the NVMe Base Specification 2.0 and the NVM Command Set
-Specification 1.0. It never allocates; callers provide storage, timing, and
-device access.
+## Overview
 
-The surface is role-symmetric: the same wire types and validators serve host
-drivers composing register accessors, doorbell arithmetic, admin/NVM command
-builders, and completion loops, and software NVMe device emulators
-interpreting host writes and authoring device responses.
+`znvme` owns the following NVMe components:
 
-## Requirements
+- Controller register layouts and typed MMIO accessors.
+- Controller reset, enable, and shutdown state transitions.
+- Admin and caller-owned I/O submission/completion queue mechanics.
+- SQE and CQE layouts, command identifiers, doorbells, and phase tags.
+- Admin builders for Identify, I/O queue creation and deletion, Number of
+  Queues, and Abort.
+- NVM builders for Read, Write, and Flush.
+- Identify Controller, Identify Namespace, and Active Namespace ID list views.
+- PRP1, PRP2, and PRP-list construction.
 
-| Field | Value |
+
+## Requirements and platform support
+
+| Item | Support |
 | --- | --- |
-| Minimum Zig | `0.16.0` |
-| Host target | `x86_64-linux` (test suite) |
-| Freestanding target | `x86_64-freestanding-none` (`zig build check`) |
-| Dependency | `zstdx` (private sibling repo) via `.path = "../zstdx"` |
-| Transcription sources | NVMe Base Specification 2.0, NVM Command Set Specification 1.0 |
+| Zig | `0.16.0` or later |
+| Package | `znvme` |
+| Public module | `nvme` |
+| Dependency | `zstdx`, declared in `build.zig.zon` |
+| Host target | `x86_64-linux` for the default test suite |
+| Freestanding check | `x86_64-freestanding-none` through `zig build check` |
+| Host endianness | Little-endian x86_64 in the current slice |
+| Completion mode | Caller-driven polling; interrupt-driven completion is deferred |
 
-## Install
+## Quick start
 
-`znvme` is consumed as a Zig module named `nvme`. Add it to your `build.zig.zon`
-alongside its `stdx` dependency, then wire the module in `build.zig`:
+Add `znvme` and its `zstdx` dependency to the consuming project's build
+configuration. Import the package module as `nvme`:
 
 ```zig
 const znvme = b.dependency("znvme", .{
     .target = target,
     .optimize = optimize,
 });
-
 exe.root_module.addImport("nvme", znvme.module("nvme"));
 ```
 
-Public imports:
-
 ```zig
 const nvme = @import("nvme");
 const stdx = @import("stdx");
 ```
 
-## Usage
-
-Controller bring-up. Illustrative shape; every step is a real API call.
+Construct a controller from caller-owned register, queue, and clock resources:
 
 ```zig
-const std = @import("std");
-const stdx = @import("stdx");
-const nvme = @import("nvme");
-
 const Controller = nvme.controller.init.Controller(MyMonotonicBackend);
 const Sqe = nvme.commands.sqe.Sqe;
 const Cqe = nvme.commands.cqe.Cqe;
@@ -62,8 +61,8 @@ var admin_sq_backing: [depth]Sqe align(@alignOf(Sqe)) = .{.{}} ** depth;
 var admin_cq_backing: [depth]Cqe align(@alignOf(Cqe)) = .{.{}} ** depth;
 var admin_cid_words: [stdx.bits.word.count(CidWord, depth)]CidWord = @splat(0);
 
-var ctrl = try Controller.init(.{
-    .registers = regs, // stdx.io.MMIO.Window over the BAR
+var controller = try Controller.init(.{
+    .registers = registers, // stdx.io.MMIO.Window over the controller BAR
     .admin = .{
         .sq = try stdx.dma.Buffer(Sqe).init(&admin_sq_backing, asq_addr),
         .cq = try stdx.dma.Buffer(Cqe).init(&admin_cq_backing, acq_addr),
@@ -72,133 +71,165 @@ var ctrl = try Controller.init(.{
     .page_size = try nvme.core.prp.PageSize.fromBytes(4096),
     .clock = .{ .backend = monotonic_backend },
 });
-
-var backoff = stdx.time.Backoff.init(nvme.controller.init.default_backoff_policy);
-
-// Reset then enable. `CC.EN = 0` is the sole tear-down (NVMe 2.0 §3.7).
-try ctrl.reset(try stdx.time.Deadline.now(&ctrl.clock, reset_budget), &backoff);
-backoff.reset();
-try ctrl.enable(try stdx.time.Deadline.now(&ctrl.clock, ctrl.ready_timeout), &backoff);
-backoff.reset();
-
-// Submit Identify Controller through the admin builder.
-_ = try nvme.commands.admin.Identify.controller(ctrl.admin.sq(), .{ .dptr = identify_dptr });
-try ctrl.admin.sq().flush();
-
-const completion = try ctrl.admin.pollOne(
-    try stdx.time.Deadline.now(&ctrl.clock, poll_budget),
-    &backoff,
-);
-std.debug.assert(completion.statusIsSuccess());
-
-// Later: orderly shutdown.
-try ctrl.shutdown(.normal, shutdown_deadline, &backoff);
 ```
 
-`Backend` is any comptime type exposing `pub fn now(self: *Backend) stdx.time.Instant`.
-Callers supply whatever monotonic source their environment provides; tests
-supply a counter.
+`MyMonotonicBackend` is a comptime type with
+`pub fn now(self: *MyMonotonicBackend) stdx.time.Instant`. The caller keeps the
+MMIO window and all queue storage valid while the controller uses them.
 
-Once `enable` returns, callers create I/O queue pairs through
-`nvme.commands.admin.CreateIoCompletionQueue.encode` and
-`CreateIoSubmissionQueue.encode`, then compose their own
-`nvme.controller.queue.Pair(Backend)` values. Read / Write / Flush live under
-`nvme.commands.nvm`.
+## Common workflows
+
+### Reset and enable a controller
+
+The caller supplies deadlines and drives the polling loop. Reset disables the
+controller when necessary. Enable programs the admin queue and waits for
+`CSTS.RDY`.
+
+```zig
+var backoff = stdx.time.Backoff.init(nvme.controller.init.default_backoff_policy);
+
+try controller.reset(
+    try stdx.time.Deadline.now(&controller.clock, reset_budget),
+    &backoff,
+);
+backoff.reset();
+try controller.enable(
+    try stdx.time.Deadline.now(&controller.clock, controller.ready_timeout),
+    &backoff,
+);
+```
+
+### Submit and complete an Admin command
+
+Command builders reserve a slot and stage its SQE. `flush` publishes all staged
+SQEs with one submission-tail doorbell write. `pollOne` waits for one matching
+completion and retires its command identifier.
+
+```zig
+_ = try nvme.commands.admin.Identify.controller(controller.admin.sq(), .{
+    .dptr = identify_dptr,
+});
+try controller.admin.sq().flush();
+
+const completion = try controller.admin.pollOne(
+    try stdx.time.Deadline.now(&controller.clock, poll_budget),
+    &backoff,
+);
+if (!completion.statusIsSuccess()) return error.IdentifyFailed;
+```
+
+### Create caller-owned I/O queue pairs
+
+After `enable`, create I/O completion and submission queues through the Admin
+builders. The caller owns every I/O ring and builds its own
+`nvme.controller.queue.Pair(Backend)` value. `znvme` does not create a
+multi-queue scheduler or queue-set aggregate.
+
+```zig
+_ = try nvme.commands.admin.CreateIoCompletionQueue.encode(controller.admin.sq(), .{
+    .qid = io_qid,
+    .queue_size = depth,
+    .base = io_cq_base,
+});
+_ = try nvme.commands.admin.CreateIoSubmissionQueue.encode(controller.admin.sq(), .{
+    .qid = io_qid,
+    .queue_size = depth,
+    .base = io_sq_base,
+    .cqid = io_qid,
+});
+try controller.admin.sq().flush();
+```
+
+### Encode NVM commands
+
+Read, Write, and Flush use a caller-selected queue and caller-owned PRP
+pointers. Each encoder stages one SQE; the caller chooses when to flush.
+
+```zig
+_ = try nvme.commands.nvm.Read.encode(io_pair.sq(), .{
+    .namespace_id = namespace_id,
+    .starting_lba = lba,
+    .logical_block_count = 1,
+    .data_pointers = read_prps,
+});
+try io_pair.sq().flush();
+```
+
+### Validate Identify responses
+
+Identify views validate caller-owned response bytes before exposing fields.
+
+```zig
+const identify = try nvme.identify.controller.IdentifyController.validate(&identify_bytes);
+const namespace = try nvme.identify.namespace.IdentifyNamespace.validate(&namespace_bytes);
+const geometry = try namespace.geometry();
+```
 
 ## Public API
 
-The facade is `src/nvme.zig`. It re-exports four domains covering thirteen modules.
+`src/nvme.zig` re-exports four namespaces:
 
-| Namespace | Owns |
+| Namespace | Purpose |
 | --- | --- |
-| `nvme.core.ids` | `Nsid`, `Cid`, `Qid` strong newtypes with reserved-value predicates |
-| `nvme.core.status` | `CompletionStatus` decode + error taxonomy |
-| `nvme.core.registers` | Controller register block, typed MMIO accessors, `Cap` / `Cc` / `Csts` / `Aqa` / `QueueBase` |
-| `nvme.core.doorbell` | Doorbell stride math and SQ / CQ addressing |
-| `nvme.core.prp` | `DataPointers.fromContiguous`, `IoQueueBase`, `PrpList`, `PageSize` |
-| `nvme.controller.queue` | `SubmissionQueue`, `CompletionQueue(Backend)`, `Pair(Backend)`, `CidAllocator` |
-| `nvme.controller.init` | `Controller(Backend)` state machine (reset / enable / shutdown) |
-| `nvme.commands.sqe` | Submission Queue Entry wire layout + validator |
-| `nvme.commands.cqe` | Completion Queue Entry wire layout + validator |
-| `nvme.commands.admin` | Identify, Create / Delete I/O SQ+CQ, Set / Get Features, Abort |
-| `nvme.commands.nvm` | Read, Write, Flush |
-| `nvme.identify.controller` | Identify Controller (CNS 01h) view + geometry |
-| `nvme.identify.namespace` | Identify Namespace (CNS 00h) view + `List` (CNS 02h) |
+| `nvme.core` | Identifiers, completion status, controller registers, doorbells, and PRP helpers. |
+| `nvme.controller` | Controller lifecycle plus submission, completion, and pair mechanics. |
+| `nvme.commands` | SQE/CQE layouts and Admin/NVM command encoders. |
+| `nvme.identify` | Validated Identify Controller/Namespace views, active namespace lists, and geometry. |
 
-Every wire type carries `comptime` `@sizeOf` / `@alignOf` / `@offsetOf` / `@bitSizeOf`
-assertions colocated with the type body. Every packed lane exposes `raw()` and
-`fromRaw()`; every byte-window view exposes `T.validate(bytes) Error!*const T`.
+## Design
 
-## Design constraints
+- **No hidden allocation.** Queue rings, command-ID bitmaps, PRP storage, and
+  register windows are caller-owned.
+- **Explicit privileged access.** Controller registers use `stdx.io.MMIO.Window`.
+  DMA-visible storage uses `stdx.dma.Buffer(T)` and `stdx.addr.DMAAddr`.
+- **Caller-serialized queues.** A queue or pair contains no internal
+  synchronization. One `Pair(Backend)` binds one SQ to one CQ.
+- **Plan publication explicitly.** Command encoders stage SQEs. `flush` makes
+  staged work visible to the controller.
+- **Wire types are checked.** Wire layouts carry compile-time size, alignment,
+  offset, and bit-width assertions.
+- **Validated byte views.** External Identify and command bytes are validated
+  before typed views are constructed.
+- **NVM Command Set and PRP transfers.** The current slice uses `CC.CSS = 0`
+  and does not support SGL transfers or non-NVM command sets.
 
-- **No allocation.** Every ring, bitmap, PRP list, and register window is caller-owned.
-- **Polled completions.** Callers drive deadlines and backoff. `znvme` does not
-  configure interrupts.
-- **One admin + N caller-owned I/O queue pairs.** No queue-set aggregate,
-  no cross-pair scheduler.
-- **Two type worlds.** Wire types are `extern struct` / `packed struct(uN)` with
-  compile-time layout assertions; semantic types compose caller-owned storage
-  and backend handles.
-- **Injected clock backend.** `Controller(Backend)` and
-  `CompletionQueue(Backend)` are generic over a monotonic clock backend.
-- **Little-endian x86_64.** Wire decoding assumes native little-endian loads.
+## Build and test
 
-The current surface covers the NVM Command Set only (`CC.CSS = 0`) and uses
-PRP transfers (no SGL). Scope, deferred surfaces, and the ownership boundary
-between `znvme` and its callers are enumerated in
-[`docs/specs/project/scope.md`](docs/specs/project/scope.md).
-
-## Repository layout
-
-```
-src/
-  nvme.zig            # public facade
-  core/               # ids, status, registers, doorbell, prp
-  controller/         # queue, init
-  commands/           # sqe, cqe, admin, nvm
-  identify/           # controller, namespace
-
-test/
-  all.zig             # host-side test aggregator (13 files)
-  fixtures/           # golden .bin files + colocated _regen.zig programs
-
-docs/
-  specs/              # normative per-module specs
-  guidelines/         # zig, conventions, testing overlays
-  decisions.md        # decisions ledger
-  planning/           # implementation plan and spec queue
-```
-
-## Verification
+Run the default host-side suite:
 
 ```sh
-zig build test    # host-side unit + golden + roundtrip suite
-zig build check   # x86_64-freestanding-none type-check of the nvme module
-zig fmt --check src test build.zig
+zig build test
 ```
 
-The host suite composes real MMIO byte buffers, caller-owned DMA slices, and an
-injected counter-backed clock. No mocks: tests exercise the same accessors
-production code uses. Golden fixtures under `test/fixtures/` are reproducible
-byte-for-byte via colocated `_regen.zig` programs.
+Type-check the public module for the freestanding target:
 
-Per-module required-test manifests are enumerated in
-[`docs/specs/verification/test-strategy.md`](docs/specs/verification/test-strategy.md).
+```sh
+zig build check
+```
+
+Check Zig source formatting:
+
+```sh
+zig fmt --check build.zig src test
+```
+
+The host suite uses real MMIO byte buffers, caller-owned DMA slices, and a
+deterministic clock backend. It requires no NVMe hardware, VM, or external
+tool. Golden fixtures under `test/fixtures/` are generated byte-for-byte by
+colocated `_regen.zig` programs.
 
 ## Documentation
 
-Normative surface lives under `docs/specs/`. `[nvme]` marks content sourced
-from NVMe Base 2.0 or NVM Command Set 1.0; unmarked spec text is `znvme`
-design. Design decisions and their resolution are recorded in
-[`docs/decisions.md`](docs/decisions.md).
+Normative contracts are under [`docs/specs/`](docs/specs/). `[nvme]` marks
+claims transcribed from NVMe Base Specification 2.0 or NVM Command Set
+Specification 1.0. Unmarked normative specification text is a `znvme` design
+decision.
 
-Start with:
-
-- [`docs/specs/project/scope.md`](docs/specs/project/scope.md) — purpose, ownership boundary, deferred seams
-- [`docs/specs/architecture.md`](docs/specs/architecture.md) — layering, type worlds, validation phases
-- [`docs/specs/verification/test-strategy.md`](docs/specs/verification/test-strategy.md) — host-test contract
-
-## Status
-
-Version `0.1.0`. Every module in the initial spec set is approved and landed;
-the public facade is stable within that surface.
+- [`docs/specs/project/scope.md`](docs/specs/project/scope.md) — package scope,
+  ownership boundaries, non-goals, and deferred seams.
+- [`docs/specs/architecture.md`](docs/specs/architecture.md) — source domains,
+  type boundary, dependency direction, and lifecycle.
+- [`docs/specs/verification/test-strategy.md`](docs/specs/verification/test-strategy.md)
+  — host-test and fixture contracts.
+- [`docs/planning/spec-queue.md`](docs/planning/spec-queue.md) — process and
+  queue for future specification work.
