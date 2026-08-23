@@ -50,7 +50,7 @@ pub const Error = error{
     InvalidQueueIdentifier,
     InvalidQueueSize,
     InvalidQueueCount,
-} || queue.ReserveError;
+} || queue.SubmissionQueue.ReserveError;
 
 pub const DeleteQueueCdw10 = packed struct(u32) {
     qid: u16,

@@ -93,7 +93,7 @@ Command-specific, media/data-integrity, path-related, and vendor-specific status
 
 ## znvme behavior
 
-`CompletionStatus.init(params)` composes a semantic status value from `Init` fields `phase`, `code_type`, `code`, `retry_delay`, `more`, and `do_not_retry`. `CompletionStatus.success(phase)` and `CompletionStatus.genericFailure(phase, code)` are shortcuts for the two common fixture shapes. These constructors exist for device-emulator fixtures and test authoring; the polling loop still consumes device-authored bytes through `CompletionStatus.from`.
+`CompletionStatus.init(params)` composes a semantic status value from `Init` fields `phase`, `code_type`, `code`, `retry_delay`, `more`, and `do_not_retry`. `CompletionStatus.success(phase)` and `CompletionStatus.genericFailure(phase, code)` are shortcuts for the two common fixture shapes. These constructors exist for device-emulator fixtures and test authoring; queue completion APIs consume device-authored bytes through `CompletionStatus.from`.
 
 `CompletionStatus.init(params).raw()` fed back through `CompletionStatus.from` reproduces the same accessor values; the builders are decode-symmetric.
 

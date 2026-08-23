@@ -30,7 +30,7 @@ This spec does not own:
 - per-command CDW10..CDW15 field semantics (`docs/specs/commands/admin.md`, `docs/specs/commands/nvm.md`);
 - PRP construction, validation, or list emission (`docs/specs/core/prp.md`);
 - queue-ring state, phase tags, capacity, or doorbell coupling (`docs/specs/controller/queue.md`, `docs/specs/core/doorbell.md`);
-- command submission, completion polling, or timeouts (`docs/specs/controller/init.md`);
+- command submission, completion drain, polling, or timeouts (`docs/specs/controller/queue.md`, `docs/specs/controller/init.md`);
 - SGL descriptor construction — SGL support is deferred by `docs/specs/project/scope.md`;
 - fused-operation policy — first slice never issues fused pairs;
 - CDW2 and CDW3 semantics — declared as reserved underscored lanes defaulting to zero and not surfaced through accessors;

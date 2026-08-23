@@ -2,207 +2,136 @@
 
 Status: Approved.
 
-`SubmissionQueue`, `CompletionQueue(Backend)`, and `Pair(Backend)` own NVMe queue-pair mechanics: SQ tail advance, CQ head advance, phase-tag flip on wrap, doorbell coupling, and outstanding-CID allocation. The three types are role-agnostic — the admin pair and every I/O pair use the same types, distinguished by their `Qid`.
+`SubmissionQueue`, `CompletionQueue(Backend)`, and `Pair(Backend)` implement caller-owned NVMe submission and completion queue mechanics, including batching, doorbells, phase tags, command identifiers, non-waiting completion drain, and deadline-driven completion polling.
 
-The submission surface is split: `reserveSlot` + `stage` publish an SQE into the ring without touching MMIO, and `flush` rings the SQ tail doorbell exactly once for however many entries were staged since the last ring. The completion surface exposes a batch `poll(out, deadline, backoff)` primitive that drains contiguous matched CQEs into a caller-owned slice with a single CQ head doorbell ring; `pollOne` remains as ergonomic sugar. Throughput consumers batch submit and completion drain; boot readers write two extra lines (`try sq.flush()`, `try pair.pollOne(...)`).
+## What this spec is
 
-`SubmissionQueue`, `CompletionQueue(Backend)`, and `Pair(Backend)` are semantic types per `docs/specs/architecture.md` §"Two type worlds". They compose wire types (`Sqe`, `Cqe`) inside `stdx.dma.Buffer(T)` fields but carry no ABI layout of their own.
+This specification owns:
 
-## Owned scope
+- `SubmissionQueue` and its reserve, stage, flush, and reservation-release operations;
+- `CompletionQueue(Backend)` and its non-waiting `drain`, deadline-driven `poll`, and `pollOne` operations;
+- `Pair(Backend)` and its completion validation and CID-retirement operations;
+- `Completion`, `Handle`, and `RequestTable(RequestState)`;
+- queue capacity, head, tail, phase-tag, and CID invariants;
+- queue-local waiting, memory-ordering, error, lifetime, and concurrency contracts.
 
-This spec owns:
+## What this spec is not
 
-- `SubmissionQueue`, the non-generic submission-side type: caller-owned `stdx.dma.Buffer(Sqe)`, `tail`, `unflushed_tail`, `head`, its doorbell, and a `stdx.tags.TagAllocator.Bounded(CidDomain, u16)` outstanding-CID pool over caller-owned bitmap words;
-- `CompletionQueue(Backend)`, the generic completion-side type: caller-owned `stdx.dma.Buffer(Cqe)`, `head`, `expected_phase`, its doorbell, and a `stdx.time.Clock.Monotonic(Backend)`;
-- `Pair(Backend)`, the coordinator that composes one `SubmissionQueue` with one `CompletionQueue(Backend)`;
-- `SubmissionQueue.Reservation`, a reserved SQ slot plus allocated CID plus a `*Sqe` slot pointer;
-- `Completion`, the decoded CQE payload paired with the retired CID;
-- `Handle`, the (CID, slot index) pair returned by `stage`;
-- `RequestTable(RequestState)`, a caller-owned `Cid`-indexed slot table for per-CID request bookkeeping in multi-outstanding callers;
-- reserve/stage/flush submission flow (`reserveSlot`, `stage`, `flush`, `releaseReservation`) with an infallible stage step and a caller-invoked doorbell ring;
-- batched completion drain (`Pair(Backend).poll(out, deadline, backoff)`, `CompletionQueue(Backend).poll(out, deadline, backoff)`) and single-completion sugar (`pollOne`), composing `stdx.io.poll.until` with caller-owned `stdx.time.Backoff` state and ringing the CQ head doorbell once per drain;
-- phase-tag flip on CQ head wrap;
-- `stdx.barrier.dma.acquire()` placement between each phase-tag read and the CQE field decode that follows it;
-- SQ head sync from `Cqe.sqhd()` on every completion;
-- CID lifecycle: allocated on `reserveSlot`, released on `poll` / `pollOne` after successful CQ head doorbell store, or on `releaseReservation` before publication;
-- SQ-full and CQ-empty edge behavior;
-- multi-pair composition: the caller owns `[]Pair(Backend)` sized against `admin.NumberOfQueues.Allocated`; znvme owns no queue-set aggregate;
-- error taxonomy for queue mechanics, split per method group.
+This specification does not own:
 
-## Deferred scope and non-goals
-
-This spec does not own:
-
-- command construction, opcode selection, per-command CDW encoding, or NSID admissibility (`docs/specs/commands/admin.md`, `docs/specs/commands/nvm.md`);
-- a queue-set aggregate — callers with N pairs hold `[]Pair(Backend)` and route by their own core / stream policy; znvme owns no scheduler and no cross-pair sharing;
-- shared CQ backing multiple SQs — one `Pair(Backend)` binds one SQ to one CQ; per-CQE SQID routing to alternate SQs is deferred until an approved spec claims that shape;
-- unstage / mid-batch rewind — once `stage` returns, the SQE is in the ring and the tail has advanced; the caller either `flush`es and observes the completion or tears down the whole SQ. There is no "cancel staged but unflushed" API;
-- controller reset, enable, or shutdown sequencing (`docs/specs/controller/init.md`);
-- admin queue base register writes (`docs/specs/core/registers.md`, `docs/specs/controller/init.md`);
-- doorbell offset math or `stdx.barrier.mmio.release` placement — those live in `docs/specs/core/doorbell.md`;
-- retry policy on CRD, DNR, or More completion bits — `docs/specs/core/status.md` decodes; the caller decides;
-- interrupt-driven completion — deferred by `docs/specs/project/scope.md`;
-- cross-thread concurrent access — each `Pair(Backend)` is caller-serialized; a multi-threaded consumer holds one pair per thread and znvme owns no locking;
-- allocation of any storage — SQ ring, CQ ring, CID bitmap, MMIO window, and completion drain buffers are caller-owned;
-- timeout budgeting policy — the caller passes a `stdx.time.Deadline` and a `*stdx.time.Backoff` computed against its own budget;
+- command encoding or command-specific validation (`docs/specs/commands/admin.md`, `docs/specs/commands/nvm.md`);
+- controller reset, enable, or shutdown (`docs/specs/controller/init.md`);
+- doorbell offset arithmetic (`docs/specs/core/doorbell.md`);
+- queue storage allocation or DMA mapping;
+- a queue-set aggregate, scheduler, reactor, or cross-pair routing policy;
+- a shared completion queue for multiple submission queues;
+- interrupt provisioning, MSI/MSI-X configuration, vector routing, handler registration, masking, acknowledgement, deferred-work scheduling, or event-latch synchronization;
+- internal locking or concurrent access to one queue pair;
+- retry policy for completion status fields;
 - big-endian host or target compatibility.
 
-## `stdx` composition
+## Terminology
 
-Directly consumed:
+- A **posted CQE** is a CQE at the current CQ head whose phase equals `expected_phase`.
+- A **drain** consumes CQEs that are posted when the operation inspects the CQ. A drain does not wait for a CQE.
+- A **poll** waits for the first posted CQE until a caller-supplied deadline, then performs a drain without another wait.
+- An **internal chunk** is at most 64 completions that `Pair.drain` validates before it changes submission-side state.
 
-- `stdx.dma.Buffer(commands.sqe.Sqe)` — SQ storage inside `SubmissionQueue`;
-- `stdx.dma.Buffer(commands.cqe.Cqe)` — CQ storage inside `CompletionQueue(Backend)`;
-- `stdx.tags.TagAllocator.Bounded(CidDomain, u16)` — outstanding-CID pool inside `SubmissionQueue`, over caller-owned `[]u64` words;
-- `stdx.time.Clock.Monotonic(Backend)` — comptime parameter on `CompletionQueue(Backend)` driving `poll` / `pollOne` deadline reads;
-- `stdx.time.Deadline` — deadline parameter on `poll` and `pollOne`;
-- `stdx.time.Backoff` — caller-owned backoff state threaded through `poll` and `pollOne`;
-- `stdx.io.poll.until` — polling primitive composing `Deadline`, `Backoff`, and the phase-probe predicate for the first CQE in a drain;
-- `stdx.barrier.dma.acquire()` — placed after each phase-tag load and before the matching CQE field decode.
+## Public namespace
 
-Composed through znvme-owned types:
+The public module is `nvme.controller.queue`, implemented by `src/controller/queue.zig` and exported through `src/controller/root.zig` and `src/nvme.zig`.
 
-- `core.doorbell.SubmissionQueueDoorbell` — the SQ tail doorbell, which internally uses `stdx.barrier.mmio.release()` before its MMIO store;
-- `core.doorbell.CompletionQueueDoorbell` — the CQ head doorbell;
-- `commands.sqe.Sqe` — SQE authorship in place via `Sqe.init(reservation.slot, params)`;
-- `commands.cqe.Cqe` — CQE decode through accessors on `*const Cqe`;
-- `core.ids.Cid` and `core.ids.Qid` — identifier types across the boundary;
-- `core.status.CompletionStatus` — the status field returned inside `Completion`.
+This specification approves these public declarations:
 
-## NVMe behavior
+- `CidAllocator`;
+- `SubmissionQueue.ReserveError`, `SubmissionQueue.FlushError`, `CqDrainError`, `CqPollError`, `DrainError`, `PollError`, and `InitError`;
+- `Handle` and `Completion`;
+- `SubmissionQueue`;
+- `CompletionQueue(Backend)`;
+- `Pair(Backend)`;
+- `RequestTable(RequestState)`.
 
-`[nvme]` The controller consumes SQEs at `SQyTDBL` and posts CQEs at the current CQ head. The host advances the CQ head only after consuming a completion.
+This specification does not approve an interrupt object, callback, handler, event, lock, queue-set type, or non-generic completion queue alias.
 
-`[nvme]` A single SQ tail doorbell write publishes every SQE between the previous tail value and the new tail value; the controller polls the tail register and consumes SQEs contiguously from head. A batched submit therefore rings the tail exactly once for N staged entries.
+## Cross-spec relationships
 
-`[nvme]` A single CQ head doorbell write acknowledges every CQE consumed between the previous head value and the new head value. A batched drain rings the head exactly once for M consumed entries.
+This specification depends on:
 
-`[nvme]` The Phase Tag (`P`) bit indicates a fresh completion. The controller writes each CQE with the opposite phase from its previous write into that slot; the host expects the phase to flip on every full CQ wrap. Initial expected phase is `1`, matching the controller's first write after CQ initialization.
+- `docs/specs/core/ids.md` for `Cid` and `Qid`;
+- `docs/specs/core/status.md` for `CompletionStatus`;
+- `docs/specs/core/doorbell.md` for submission-tail and completion-head doorbells;
+- `docs/specs/commands/sqe.md` for `Sqe`;
+- `docs/specs/commands/cqe.md` for `Cqe`;
+- `docs/specs/project/scope.md` for allocation, interrupt, target, and ownership boundaries.
 
-`[nvme]` `Cqe.SQHD` reports the SQ head pointer the controller has consumed through, letting the host reclaim SQ slots without a separate mechanism.
+This specification composes with, but does not own:
 
-`[nvme]` Every command carries a Command Identifier in `Sqe.CDW0.CID` that is echoed in the corresponding `Cqe.CID`; uniqueness across outstanding commands on a given SQ is required for the controller to correlate submission and completion.
+- `stdx.dma.Buffer(T)` for caller-owned queue storage;
+- `stdx.tags.TagAllocator.Bounded` for outstanding CIDs;
+- `stdx.time.Clock.Monotonic(Backend)`, `Deadline`, and `Backoff` for polling;
+- `stdx.io.poll.until` for the first-completion wait;
+- `stdx.barrier.mmio.release()` inside the SQ tail doorbell;
+- `stdx.barrier.dma.acquire()` between a matched CQE phase load and CQE field loads.
 
-## znvme behavior
+## Data structures and representation
 
-### Multi-pair composition
+`SubmissionQueue`, `CompletionQueue(Backend)`, and `Pair(Backend)` are semantic types. They have no ABI or wire-layout guarantee.
 
-One `Pair(Backend)` value represents one queue pair. `SubmissionQueue.qid` and `CompletionQueue(Backend).qid` are equal for a valid pair; `Pair.init` rejects mismatched `qid` or `capacity`.
+One `Pair(Backend)` binds one SQ and one CQ. The SQ and CQ MUST have the same `Qid` and capacity. The caller composes multiple independent pairs when it needs multiple I/O queues.
 
-Callers with multiple I/O pairs hold `[]Pair(Backend)` (or however many named pair variables the caller prefers) and route work by their own policy — per-CPU core, per-stream, per-namespace. znvme owns no aggregate, no scheduler, and no cross-pair sharing; per-pair state stays fully caller-serialized. The negotiated ceiling comes from `admin.NumberOfQueues.set` / `.get` and its `Allocated` response; `Controller(Backend)` does not store it.
+`SubmissionQueue.tail` identifies the next empty SQ slot. `unflushed_tail` records the tail value last written to the SQ tail doorbell. `head` records the last controller-consumed position reported through CQE `SQHD`.
 
-`capacity` is the depth in entries and is identical for the paired SQ and CQ in the first slice. Asymmetric SQ/CQ depths do not land until an approved spec claims them.
+`CompletionQueue.head` identifies the next CQE to inspect. `expected_phase` starts at `1`. The completion queue flips `expected_phase` when `head` wraps to zero.
 
-### Submission — reserve → stage → flush
+`[nvme]` The controller consumes SQEs through `SQyTDBL`, posts CQEs at the CQ tail, and reuses a CQ slot only after the host advances the CQ head doorbell.
 
-`SubmissionQueue.tail` is the next-empty slot index that a fresh `reserveSlot` will target. `SubmissionQueue.unflushed_tail` records the last tail value the doorbell has seen; when `tail == unflushed_tail` there is nothing to flush and `flush` still writes `tail` to the doorbell (idempotent — the controller sees the same tail it already has and the write is a no-op on the controller side). `SubmissionQueue.head` is the last slot the controller confirmed consumed, updated from `Cqe.sqhd()` on every completion.
+`[nvme]` A CQE is new when its Phase Tag equals the host's expected phase for that slot.
 
-`SubmissionQueue.isFull()` returns true when `(tail + 1) % capacity == head`. `reserveSlot` on a full SQ returns `error.SubmissionQueueFull` and does not allocate a CID.
+`[nvme]` `Cqe.SQHD` reports the SQ head that the controller has consumed.
 
-`SubmissionQueue.reserveSlot` allocates the lowest free CID via `TagAllocator.Bounded.allocOne`, returns a `Reservation` bound to `sq.ring.slice()[tail]` via `Reservation.slot: *Sqe`, and does not advance `tail`. The caller stamps the slot through `Sqe.init(reservation.slot, .{ ... })` and either calls `stage` to publish (advances `tail`) or `releaseReservation` to unwind (frees the CID, `tail` stays put). Using an `errdefer` on `releaseReservation` between `reserveSlot` and `stage` is the idiomatic pattern; because `stage` is infallible, the `errdefer` only fires if the caller's own stamping code fails between `reserveSlot` and `stage`.
+`[nvme]` A CID MUST be unique among outstanding commands on one SQ. The controller echoes the SQE CID in the corresponding CQE.
 
-`SubmissionQueue.stage` asserts `reservation.slot_index == self.tail`, advances `tail` by one with wrap, and returns `Handle{ command_id, slot_index }`. `stage` performs no MMIO, no allocation, no waiting, and cannot fail — the SQE is already in the ring at the reserved slot pointer, and advancing `tail` is a purely local index update. Once `stage` returns, the SQE is in the ring but is not yet visible to the controller.
+`Handle` contains the CID and SQ slot index assigned during submission. `Completion` contains the decoded CQE fields after phase matching. `RequestTable(RequestState)` maps each CID to caller-owned request state.
 
-`SubmissionQueue.flush` writes the current `tail` to the SQ tail doorbell via `SubmissionQueueDoorbell.setTail`. It is legal to call `flush` when `tail == unflushed_tail` (no staged entries since the last flush); the doorbell store re-writes the same value the controller already has, which is idempotent. `flush` is the only fallible step in the submission path; on doorbell error it returns `error.FlushFailed`-family (see the error taxonomy below), `tail` and `unflushed_tail` are unchanged relative to their pre-`flush` values, and a retry writes the same tail value. On success, `unflushed_tail = tail`.
+The caller owns every SQ ring, CQ ring, CID bitmap, request-state slice, output slice, and DMA mapping. The caller MUST keep the backing storage valid for the complete lifetime of every queue value that borrows it.
 
-Callers batch by staging many reservations and calling `flush` once. Boot readers stage one and flush one; the flow is:
+## Global invariants
 
-```
-try builder(...)         // reserveSlot + Sqe.init + stage
-try sq.flush()
-const c = try pair.pollOne(deadline, &backoff)
-```
+- Queue operations MUST NOT allocate memory.
+- Queue operations MUST NOT use hidden global state.
+- The caller MUST serialize all mutable operations on one `SubmissionQueue`, `CompletionQueue`, or `Pair`.
+- The caller MUST NOT mutate two copied values that represent the same initialized queue state. Moving a queue value before use is permitted.
+- `SubmissionQueue.capacity` and `CompletionQueue.capacity` MUST equal the corresponding ring length and MUST be nonzero.
+- A valid `Pair` MUST retain equal SQ/CQ QIDs and capacities.
+- `SubmissionQueue.tail`, `unflushed_tail`, and `head` MUST remain less than `capacity`.
+- `CompletionQueue.head` MUST remain less than `capacity`.
+- A CID MUST remain allocated from `reserveSlot` until successful completion retirement or `releaseReservation`.
+- A completion operation MUST issue `stdx.barrier.dma.acquire()` after each matched phase load and before it reads the remaining fields of that CQE.
+- A completion operation MUST advance CQ state only after the CQ head doorbell write succeeds.
+- An interrupt notification MUST NOT replace CQ phase inspection as the completion-readiness condition.
+- No queue operation provides internal thread, interrupt, or NMI synchronization.
 
-The reservation-to-stage gap does not intersperse another `reserveSlot` on the same queue — each `stage` asserts `reservation.slot_index == tail`, so the caller either stages immediately after reserving or releases the reservation. This is a caller-serialization invariant, not a lock: a caller that owns one pair per thread and drives it sequentially can never violate it.
-
-### Completion — batched drain
-
-`CompletionQueue(Backend).head` is the next slot to inspect. `expected_phase` starts at `1` and flips whenever `head` wraps from `capacity - 1` back to `0`.
-
-`CompletionQueue(Backend).poll(out, deadline, backoff)` drains contiguous matched CQEs into the caller-owned `out: []Completion` slice. It waits on the *first* CQE only:
-
-1. `poll.until` iterates the phase-probe predicate on `ring[head]` against `expected_phase`. On mismatch, `poll.until` invokes `Backoff.next`; on `Deadline.TimeoutError` from `Backoff.next` it propagates `error.Timeout`.
-2. On the first matched phase, the predicate returns success. `poll` then issues `stdx.barrier.dma.acquire()` and decodes `ring[head]` into `out[0]`.
-3. For subsequent slots, `poll` issues `Cqe.phase()` (an atomic monotonic load of the status lane) directly, without going back through `poll.until` — the caller-provided backoff is a "wait for first" tool, not a per-slot dwell. A phase mismatch on slot `i > 0` stops the drain with `i` completions collected. `poll` issues `stdx.barrier.dma.acquire()` after every matched phase in the loop, before reading the corresponding CQE fields.
-4. The drain stops at whichever comes first: `out` is full, a phase mismatch (no more posted completions), or a CQ wrap (the drain never spans a wrap in a single call — the next call starts with the new `expected_phase`).
-5. `poll` computes the target head as `(cq.head + count) % cq.capacity` and rings the CQ head doorbell **once** via `CompletionQueueDoorbell.setHead(new_head)`. On doorbell error, `poll` returns the error, `cq.head` and `cq.expected_phase` are unchanged, and every drained-into slot in `out[0..count]` is discarded (the caller MUST NOT consume `out` on an error return). Retrying `poll` re-observes the same completions from `cq.head`.
-6. On success, `poll` advances `cq.head = new_head`, flips `cq.expected_phase` if the new head is `0`, and returns `count`.
-
-`CompletionQueue(Backend).pollOne(deadline, backoff)` is sugar: it calls `poll` with a stack `[1]Completion` and returns slot `0`.
-
-`Pair(Backend).poll(out, deadline, backoff)` composes `CompletionQueue.poll` with submission-side validation and CID release. `Pair.poll` invokes `CompletionQueue.poll` for a chunk first (with `N == out.len` capped at a small comptime constant like `64`; larger `out` slices drain in multiple internal chunks, each doing one CQ head doorbell ring), then validates every completion in the returned chunk. If any completion in the chunk has:
-
-- `completion.sqid.raw() != sq.qid.raw()` → `error.SqidMismatch`;
-- `completion.sqhd >= sq.capacity` → `error.InvalidSubmissionQueueHead`;
-- `completion.cid` was not allocated in `sq.cids` → `error.UnknownCommandId`;
-
-then `Pair.poll` returns the error. Submission-side state (`sq.head`, `sq.cids`) is unchanged for the failing chunk, and no completion from the failing chunk is written into `out`. Completion-side state (`cq.head`, `cq.expected_phase`) has already advanced inside `CompletionQueue.poll` because the CQ head doorbell was rung before validation ran — the failing CQE has been consumed from the CQ. On chunk success, `Pair.poll` updates `sq.head = last.sqhd`, releases every drained CID via `sq.cids.freeOne` (safe because per-pair caller-serialization prevents concurrent frees), copies the drained completions into `out[start..start+count]`, and repeats for the next chunk if `out` had more room and the CQ had more posted completions. `Pair.poll` returns the total number of completions written into `out`.
-
-A chunk-internal validation error is a controller-fault signal, not a retry point. Because the CQ head doorbell rings before validation, retrying `Pair.poll` will not re-observe the failing CQE — the caller `Controller.reset`s the pair and re-drives bring-up. Prior chunks (from a multi-chunk drain) that already succeeded remain written into `out[0..start]` and their CIDs freed, but a caller sees only the returned `error`, not the partial count; `out[0..start]` is not accessible on the error return.
-
-`Pair(Backend).pollOne(deadline, backoff)` is sugar over `Pair.poll` with a stack `[1]Completion`.
-
-Ordering property: the caller-provided `out` slice is filled in the exact order the device posted the completions to the CQ, which is not necessarily the order the caller submitted the commands. Callers with multiple outstanding commands correlate via `completion.cid`.
-
-### CID lifecycle
-
-`reserveSlot` allocates via `TagAllocator.Bounded.allocOne` (lowest free CID). `stage` does not touch CID state. `poll` / `pollOne` release each drained CID via `TagAllocator.Bounded.freeOne` after the CQ head doorbell store succeeds and after the chunk-wide validation passes. `releaseReservation` frees a still-unpublished reservation's CID without publishing. A device-returned CID that was never allocated is a validation error, not a programmer error — `Pair.poll` returns `error.UnknownCommandId` and does not touch submission-side state (`sq.head`, `sq.cids`); the caller treats it as a controller/device fault and resets the pair (the CQ head has already advanced).
-
-### Cross-boundary hooks
-
-`SubmissionQueue.setHeadFromSqhd` and `SubmissionQueue.releaseCompletedCid` are public because `Pair(Backend).poll` calls them across the type boundary. Callers that use `SubmissionQueue` and `CompletionQueue(Backend)` without a `Pair` wrapper call these after `CompletionQueue.poll` returns, applying the same validation semantics per completion. `setHeadFromSqhd` returns `error.InvalidSubmissionQueueHead` when `sqhd >= capacity`; `releaseCompletedCid` returns `error.UnknownCommandId` when the completion's CID was not allocated. `releaseReservation` remains assertion-backed because it unwinds a caller-owned reservation, not device-authored data.
-
-### Backoff and barriers
-
-`poll` and `pollOne` never block and never yield on their own. `poll.until` invokes the caller-supplied `Backoff` for every non-payload iteration; `Backoff.Policy.yield` (when non-null) or `clock.sleep` (on `.sleep(d)`) are the only ways non-spin dispatch happens. First-slice firmware callers pass a spin-only policy such as `nvme.controller.init.default_backoff_policy`. Throughput callers pass a policy tuned for their reactor.
-
-`poll` returns `error.Timeout` when `Backoff.next` reports `.timeout` on the *first* completion of a drain (i.e., the CQ was empty for the entire deadline window). Once the first completion is consumed, the drain runs to phase mismatch or `out` fullness without further deadline checks — draining is bounded by CQ capacity per call, and hitting the deadline mid-drain does not truncate the batch. This matches the "handle observed device state before failing" idiom.
-
-`poll`'s DMA acquire orders CQE-field reads only; it does not order host loads from the caller-owned Identify / Read / Write payload buffers against the device's DMA write of those buffers. Callers reading a device-written payload after a successful `poll` MUST issue `stdx.barrier.dma.acquire()` before the first payload load, or use a byte-window entry point whose contract already includes that acquire (currently none — Identify views borrow already-published bytes).
-
-## Approved API
+## API
 
 ```zig
-// src/controller/queue.zig
-//! NVMe queue-pair mechanics. Spec: docs/specs/controller/queue.md.
-
-const std = @import("std");
-
-const stdx = @import("stdx");
-
-const doorbell = @import("../core/doorbell.zig");
-const ids = @import("../core/ids.zig");
-
-const Cid = ids.Cid;
-const CompletionStatus = @import("../core/status.zig").CompletionStatus;
-const Cqe = @import("../commands/cqe.zig").Cqe;
-const Qid = ids.Qid;
-const Sqe = @import("../commands/sqe.zig").Sqe;
-
 pub const CidAllocator = stdx.tags.TagAllocator.Bounded(ids.CidDomain, u16);
 
-/// Reserve-side errors: SQ capacity and CID exhaustion.
-pub const ReserveError = error{
-    SubmissionQueueFull,
-    CidExhausted,
-} || CidAllocator.Error;
+pub const CqDrainError = doorbell.CompletionQueueDoorbell.Error;
 
-/// Flush errors bubble up straight from the SQ tail doorbell.
-pub const FlushError = doorbell.SubmissionQueueDoorbell.Error;
-
-/// Completion-queue drain errors: timeout and CQ head doorbell.
 pub const CqPollError = error{
     Timeout,
-} || doorbell.CompletionQueueDoorbell.Error;
+} || CqDrainError;
 
-/// Pair drain errors: `CqPollError` plus per-completion validation.
-pub const PollError = error{
+pub const DrainError = error{
     SqidMismatch,
     InvalidSubmissionQueueHead,
     UnknownCommandId,
-} || CqPollError;
+} || CqDrainError;
 
-/// Init-time errors for `SubmissionQueue.init`, `CompletionQueue.init`, and `Pair.init`.
+pub const PollError = error{
+    Timeout,
+} || DrainError;
+
 pub const InitError = error{
     CapacityMismatch,
     PairMismatch,
@@ -221,16 +150,17 @@ pub const Completion = struct {
     dw0: u32,
     dw1: u32,
 
-    /// True iff the CQE status field decoded to a generic-success completion.
-    /// This is phase-agnostic: `Pair.poll` / `pollOne` and `CompletionQueue.poll` /
-    /// `pollOne` only return a `Completion` after the CQE phase has been matched and
-    /// the CQ head advanced, so callers do not re-check phase here.
-    pub fn statusIsSuccess(self: Completion) bool {
-        return self.status.isSuccess();
-    }
+    pub fn statusIsSuccess(self: Completion) bool;
 };
 
 pub const SubmissionQueue = struct {
+    pub const ReserveError = error{
+        SubmissionQueueFull,
+        CidExhausted,
+    } || CidAllocator.Error;
+
+    pub const FlushError = doorbell.SubmissionQueueDoorbell.Error;
+
     pub const Init = struct {
         qid: Qid,
         capacity: u16,
@@ -248,98 +178,27 @@ pub const SubmissionQueue = struct {
     qid: Qid,
     capacity: u16,
     ring: stdx.dma.Buffer(Sqe),
-    tail: u16 = 0,
-    unflushed_tail: u16 = 0,
-    head: u16 = 0,
+    tail: u16,
+    unflushed_tail: u16,
+    head: u16,
     cids: CidAllocator,
     db: doorbell.SubmissionQueueDoorbell,
 
-    pub fn init(params: Init) InitError!SubmissionQueue {
-        if (params.capacity == 0) return error.CapacityMismatch;
-        if (params.ring.len() != params.capacity) return error.CapacityMismatch;
-
-        return .{
-            .qid = params.qid,
-            .capacity = params.capacity,
-            .ring = params.ring,
-            .cids = try CidAllocator.wrap(params.cid_words, params.capacity),
-            .db = params.doorbell,
-        };
-    }
-
-    pub fn doorbell(self: SubmissionQueue) doorbell.SubmissionQueueDoorbell {
-        return self.db;
-    }
-
-    pub fn isFull(self: SubmissionQueue) bool {
-        const next: u16 = (self.tail + 1) % self.capacity;
-        return next == self.head;
-    }
-
-    pub fn hasStaged(self: SubmissionQueue) bool {
-        return self.tail != self.unflushed_tail;
-    }
-
-    pub fn outstanding(self: SubmissionQueue) usize {
-        return self.cids.allocated();
-    }
-
-    pub fn reserveSlot(self: *SubmissionQueue) ReserveError!Reservation {
-        if (self.isFull()) return error.SubmissionQueueFull;
-
-        const cid = self.cids.allocOne() catch return error.CidExhausted;
-        const slot = &self.ring.slice()[self.tail];
-
-        return .{
-            .slot_index = self.tail,
-            .command_id = cid,
-            .slot = slot,
-        };
-    }
-
-    /// Publish the SQE at `reservation.slot` into the ring. Infallible: advances
-    /// `tail` and returns the Handle. The SQE is not yet visible to the controller;
-    /// `flush` is required.
-    pub fn stage(self: *SubmissionQueue, reservation: Reservation) Handle {
-        std.debug.assert(reservation.slot_index == self.tail);
-
-        self.tail = (self.tail + 1) % self.capacity;
-
-        return .{
-            .command_id = reservation.command_id,
-            .slot_index = reservation.slot_index,
-        };
-    }
-
-    /// Ring the SQ tail doorbell with the current tail. Idempotent: legal with no
-    /// staged entries (writes the same tail the controller already has).
-    /// On error, `tail` and `unflushed_tail` are unchanged; the caller may retry.
-    pub fn flush(self: *SubmissionQueue) FlushError!void {
-        try self.db.setTail(self.tail);
-        self.unflushed_tail = self.tail;
-    }
-
-    pub fn releaseReservation(self: *SubmissionQueue, reservation: Reservation) void {
-        self.cids.freeOne(reservation.command_id) catch unreachable;
-    }
-
-    pub fn setHeadFromSqhd(self: *SubmissionQueue, sqhd: u16) PollError!void {
-        if (sqhd >= self.capacity) return error.InvalidSubmissionQueueHead;
-        self.head = sqhd;
-    }
-
-    pub fn releaseCompletedCid(self: *SubmissionQueue, cid: Cid) PollError!void {
-        self.cids.freeOne(cid) catch |err| switch (err) {
-            error.NotAllocated => return error.UnknownCommandId,
-            else => return err,
-        };
-    }
+    pub fn init(params: Init) InitError!SubmissionQueue;
+    pub fn doorbell(self: SubmissionQueue) doorbell.SubmissionQueueDoorbell;
+    pub fn isFull(self: SubmissionQueue) bool;
+    pub fn hasStaged(self: SubmissionQueue) bool;
+    pub fn outstanding(self: SubmissionQueue) usize;
+    pub fn reserveSlot(self: *SubmissionQueue) ReserveError!Reservation;
+    pub fn releaseReservation(self: *SubmissionQueue, reservation: Reservation) void;
+    pub fn stage(self: *SubmissionQueue, reservation: Reservation) Handle;
+    pub fn flush(self: *SubmissionQueue) FlushError!void;
+    pub fn setHeadFromSqhd(self: *SubmissionQueue, sqhd: u16) DrainError!void;
+    pub fn releaseCompletedCid(self: *SubmissionQueue, cid: Cid) DrainError!void;
 };
 
 pub fn CompletionQueue(comptime Backend: type) type {
     return struct {
-        const Self = @This();
-
         pub const Clock = stdx.time.Clock.Monotonic(Backend);
 
         pub const Init = struct {
@@ -353,427 +212,424 @@ pub fn CompletionQueue(comptime Backend: type) type {
         qid: Qid,
         capacity: u16,
         ring: stdx.dma.Buffer(Cqe),
-        head: u16 = 0,
-        expected_phase: u1 = 1,
+        head: u16,
+        expected_phase: u1,
         db: doorbell.CompletionQueueDoorbell,
         clock: Clock,
 
-        pub fn init(params: Init) InitError!Self {
-            if (params.capacity == 0) return error.CapacityMismatch;
-            if (params.ring.len() != params.capacity) return error.CapacityMismatch;
-
-            return .{
-                .qid = params.qid,
-                .capacity = params.capacity,
-                .ring = params.ring,
-                .db = params.doorbell,
-                .clock = params.clock,
-            };
-        }
-
-        pub fn doorbell(self: Self) doorbell.CompletionQueueDoorbell {
-            return self.db;
-        }
-
-        /// Drain contiguous matched CQEs into `out`. Waits on the FIRST completion
-        /// via `stdx.io.poll.until`; subsequent slots are probed without engaging
-        /// `Backoff`. Rings the CQ head doorbell exactly once at the end.
-        ///
-        /// Returns the number of completions written into `out[0..]`.
-        /// On error, `head`/`expected_phase` are unchanged and `out` is untouched.
+        pub fn init(params: Init) InitError!@This();
+        pub fn doorbell(self: @This()) doorbell.CompletionQueueDoorbell;
+        pub fn drain(self: *@This(), out: []Completion) CqDrainError!usize;
         pub fn poll(
-            self: *Self,
+            self: *@This(),
             out: []Completion,
             deadline: stdx.time.Deadline,
             backoff: *stdx.time.Backoff,
-        ) CqPollError!usize {
-            if (out.len == 0) return 0;
-
-            // Wait on the first completion.
-            const FirstPredicate = struct {
-                cq: *Self,
-
-                pub fn call(p: @This()) CqPollError!?void {
-                    const slot = &p.cq.ring.constSlice()[p.cq.head];
-                    if (slot.phase() != (p.cq.expected_phase != 0)) return null;
-                    return {};
-                }
-            };
-            _ = try stdx.io.poll.until(
-                &self.clock,
-                deadline,
-                backoff,
-                FirstPredicate{ .cq = self },
-            );
-
-            // Drain contiguous matched CQEs without wrapping. `count += 1`
-            // is inline before the wrap check because Zig's `while (...) : (expr)`
-            // continue-expression does not fire on `break`.
-            var count: usize = 0;
-            var probe = self.head;
-            var wrapped = false;
-            while (count < out.len) {
-                const slot = &self.ring.constSlice()[probe];
-                if (count > 0) {
-                    // First slot's phase already matched inside poll.until.
-                    if (slot.phase() != (self.expected_phase != 0)) break;
-                }
-
-                stdx.barrier.dma.acquire();
-                out[count] = .{
-                    .cid = slot.cid(),
-                    .sqid = slot.sqid(),
-                    .sqhd = slot.sqhd(),
-                    .status = slot.status(),
-                    .dw0 = slot.dw0(),
-                    .dw1 = slot.dw1(),
-                };
-                count += 1;
-                const next = probe +% 1;
-                if (next == self.capacity) {
-                    wrapped = true;
-                    break; // Stop at wrap; next call handles the flip.
-                }
-                probe = next;
-            }
-            // count is at least 1 (the first predicate matched).
-            const new_head: u16 = @intCast((self.head + count) % self.capacity);
-            try self.db.setHead(new_head);
-
-            // Flip phase from `wrapped`, not `new_head < self.head`: the
-            // latter misses the head=0 full-wrap where both are zero.
-            if (wrapped) self.expected_phase ^= 1;
-            self.head = new_head;
-            return count;
-        }
-
+        ) CqPollError!usize;
         pub fn pollOne(
-            self: *Self,
+            self: *@This(),
             deadline: stdx.time.Deadline,
             backoff: *stdx.time.Backoff,
-        ) CqPollError!Completion {
-            var buf: [1]Completion = undefined;
-            const n = try self.poll(buf[0..], deadline, backoff);
-            std.debug.assert(n == 1);
-            return buf[0];
-        }
+        ) CqPollError!Completion;
     };
 }
 
 pub fn Pair(comptime Backend: type) type {
     return struct {
-        const Self = @This();
-
         pub const Cq = CompletionQueue(Backend);
 
-        _sq: SubmissionQueue,
-        _cq: Cq,
-
-        pub fn init(submission: SubmissionQueue, completion: Cq) InitError!Self {
-            if (submission.qid.raw() != completion.qid.raw()) return error.PairMismatch;
-            if (submission.capacity != completion.capacity) return error.PairMismatch;
-
-            return .{ ._sq = submission, ._cq = completion };
-        }
-
-        pub fn sq(self: *Self) *SubmissionQueue {
-            return &self._sq;
-        }
-
-        pub fn cq(self: *Self) *Cq {
-            return &self._cq;
-        }
-
-        /// Drain contiguous matched CQEs, validating per-completion SQID/SQHD/CID
-        /// and releasing every drained CID. Rings the CQ head doorbell exactly
-        /// once per internal chunk. On any per-completion validation error, no
-        /// state advances and no completions are written to `out`.
+        pub fn init(submission: SubmissionQueue, completion: Cq) InitError!@This();
+        pub fn sq(self: *@This()) *SubmissionQueue;
+        pub fn cq(self: *@This()) *Cq;
+        pub fn drain(self: *@This(), out: []Completion) DrainError!usize;
         pub fn poll(
-            self: *Self,
+            self: *@This(),
             out: []Completion,
             deadline: stdx.time.Deadline,
             backoff: *stdx.time.Backoff,
-        ) PollError!usize {
-            const chunk_max: usize = 64;
-            var written: usize = 0;
-            while (written < out.len) {
-                var chunk: [chunk_max]Completion = undefined;
-                const room = @min(out.len - written, chunk_max);
-                const n = self._cq.poll(chunk[0..room], deadline, backoff) catch |err| switch (err) {
-                    error.Timeout => if (written == 0) return err else break,
-                    else => |e| return e,
-                };
-
-                for (chunk[0..n]) |c| {
-                    if (c.sqid.raw() != self._sq.qid.raw()) return error.SqidMismatch;
-                    if (c.sqhd >= self._sq.capacity) return error.InvalidSubmissionQueueHead;
-                    if (!self._sq.cids.isAllocated(c.command_id_field())) return error.UnknownCommandId;
-                }
-
-                // All validated. Apply submission-side state and hand out.
-                for (chunk[0..n]) |c| {
-                    self._sq.head = c.sqhd; // last write wins; monotonic in NVMe wire order.
-                    self._sq.cids.freeOne(c.cid) catch unreachable;
-                    out[written] = c;
-                    written += 1;
-                }
-
-                if (n < room) break; // CQ drained.
-            }
-            return written;
-        }
-
+        ) PollError!usize;
         pub fn pollOne(
-            self: *Self,
+            self: *@This(),
             deadline: stdx.time.Deadline,
             backoff: *stdx.time.Backoff,
-        ) PollError!Completion {
-            var buf: [1]Completion = undefined;
-            const n = try self.poll(buf[0..], deadline, backoff);
-            std.debug.assert(n == 1);
-            return buf[0];
-        }
+        ) PollError!Completion;
     };
 }
 
 pub fn RequestTable(comptime RequestState: type) type {
     return struct {
-        const Self = @This();
-
         slots: []RequestState,
         capacity: u16,
 
-        pub fn wrap(slots: []RequestState, capacity: u16) InitError!Self {
-            if (slots.len != capacity) return error.CapacityMismatch;
-            return .{ .slots = slots, .capacity = capacity };
-        }
-
-        pub fn at(self: *Self, cid: Cid) *RequestState {
-            std.debug.assert(cid.raw() < self.capacity);
-            return &self.slots[cid.raw()];
-        }
-
-        pub fn atConst(self: *const Self, cid: Cid) *const RequestState {
-            std.debug.assert(cid.raw() < self.capacity);
-            return &self.slots[cid.raw()];
-        }
+        pub fn wrap(slots: []RequestState, capacity: u16) InitError!@This();
+        pub fn at(self: *@This(), cid: Cid) *RequestState;
+        pub fn atConst(self: *const @This(), cid: Cid) *const RequestState;
     };
 }
 ```
 
-`Cqe.command_id_field()` above is shorthand for the raw `u16` view that `CidAllocator.isAllocated` needs; concrete implementation converts `c.cid.raw()` back into the allocator's index. The public spec surface is `c.cid: Cid`; implementation is free to phrase the isAllocated check however works with the `TagAllocator.Bounded` API. `TagAllocator.Bounded` exposes `isAllocated(Tag)` in stdx.
+The signatures in this section are normative. Function bodies and private declarations are implementation details and MUST NOT be inferred from the signature-only snippets.
 
-## Behavior contract
+### `SubmissionQueue.init`
 
-| Operation | Allocation | Waiting | Bounds | Concurrency | Ordering | Errors |
-| --- | --- | --- | --- | --- | --- | --- |
-| `SubmissionQueue.init` | never | never | O(1) checks + `CidAllocator.wrap` | value type | none | `InitError` |
-| `SubmissionQueue.doorbell` / `isFull` / `hasStaged` / `outstanding` | never | never | O(1) | borrowed value | none | infallible |
-| `SubmissionQueue.reserveSlot` | never | never | O(1) | caller-serialized per queue | none | `ReserveError` |
-| `SubmissionQueue.stage` | never | never | O(1) | caller-serialized per queue | none (no MMIO) | infallible (asserts `slot_index == tail`) |
-| `SubmissionQueue.flush` | never | never | O(1) | caller-serialized per queue | `stdx.barrier.mmio.release` inside SQ tail doorbell | `FlushError` |
-| `SubmissionQueue.releaseReservation` | never | never | O(1) | caller-serialized per queue | none | infallible (asserts reservation allocation state) |
-| `SubmissionQueue.setHeadFromSqhd` | never | never | O(1) | caller-serialized per queue | none | `InvalidSubmissionQueueHead` |
-| `SubmissionQueue.releaseCompletedCid` | never | never | O(1) | caller-serialized per queue | none | `UnknownCommandId`, `CidAllocator.Error` |
-| `CompletionQueue(Backend).init` | never | never | O(1) | value type | none | `InitError` |
-| `CompletionQueue(Backend).doorbell` | never | never | O(1) | borrowed value | none | infallible |
-| `CompletionQueue(Backend).poll(out)` | never | first completion via `stdx.io.poll.until`; drain is bounded by `out.len` and CQ capacity | O(min(out.len, cq.capacity)) | single-owner over `*Backoff`, caller-serialized per queue | phase probe via `Cqe.phase()` monotonic atomic load per drained slot; `stdx.barrier.dma.acquire` after each matched phase; `stdx.barrier.mmio.release` inside CQ head doorbell (once per call) | `CqPollError` |
-| `CompletionQueue(Backend).pollOne` | never | as `poll` with `out.len == 1` | O(1) | as `poll` | as `poll` | `CqPollError` |
-| `Pair(Backend).init` | never | never | O(1) | value type | none | `PairMismatch` |
-| `Pair(Backend).sq` / `cq` | never | never | O(1) | borrowed pointer | none | infallible |
-| `Pair(Backend).poll(out)` | never | as `CompletionQueue.poll` | O(min(out.len, cq.capacity)) | single-owner over `*Backoff`, caller-serialized per pair | as `CompletionQueue.poll`; SQ-side state advanced only after chunk-wide validation passes | `PollError` |
-| `Pair(Backend).pollOne` | never | as `poll` | O(1) | as `poll` | as `poll` | `PollError` |
-| `RequestTable(RequestState).wrap` | never | never | O(1) | value type | none | `CapacityMismatch` |
-| `RequestTable(RequestState).at` / `atConst` | never | never | O(1) | borrowed pointer to slot | none | infallible (asserts `cid < capacity`) |
+#### Contract
 
-## Validation phases
+`init` MUST reject zero capacity or a ring length that differs from `capacity` with `error.CapacityMismatch`. `init` MUST wrap the caller-owned CID bitmap for the same capacity. On success, all indices and the outstanding CID count MUST start at zero.
 
-Per `docs/specs/architecture.md` §"Validation phases":
+#### Errors and fault behavior
 
-- **Compile time.** `stdx.time.Clock.Monotonic(Backend)` signature-checks the `Backend` type at instantiation. No layout assertions; these are semantic types.
-- **Public validation.** `SubmissionQueue.init` and `CompletionQueue(Backend).init` reject zero capacity and mismatched ring lengths with `error.CapacityMismatch`. `SubmissionQueue.init` delegates to `CidAllocator.wrap`, which rejects capacities that overflow `u16` or exceed the caller's bitmap. `Pair(Backend).init` rejects mismatched `qid` or `capacity` with `error.PairMismatch`. `Pair(Backend).poll` rejects device-authored completions whose SQID does not match the pair QID (`SqidMismatch`), whose SQHD is outside the SQ capacity (`InvalidSubmissionQueueHead`), or whose CID is not allocated (`UnknownCommandId`) — chunk-wide, before any state advances.
-- **Assertions.** `SubmissionQueue.stage` asserts `reservation.slot_index == tail`. `SubmissionQueue.releaseReservation` treats `NotAllocated` as `unreachable` because releasing a reservation that was never allocated is a caller programmer error. `RequestTable(RequestState).at` and `atConst` assert `cid.raw() < capacity`; a CID out of range is a caller-side programmer error since `poll` never yields a CID outside the SQ's allocator bitmap. Device-authored completion fields never use assertions for validation.
+On error, `init` MUST NOT return a queue value. It MUST propagate applicable `CidAllocator.Error` values.
 
-## Example usage
+#### Locking and waiting
 
-Illustrative shape only; not part of the approved API. `docs/specs/controller/init.md` owns admin queue bring-up and `docs/specs/commands/admin.md` owns Identify Controller encoding.
+Never.
 
-### Boot reader — one command
+#### Allocation behavior
 
-```zig
-const std = @import("std");
+Never. `init` borrows the ring and CID bitmap.
 
-const nvme = @import("nvme");
-const stdx = @import("stdx");
+#### Concurrency effects
 
-const Pair = nvme.controller.queue.Pair(MyHpetBackend);
-const Sqe = nvme.commands.sqe.Sqe;
+The returned value requires caller serialization after initialization.
 
-// Submit an Identify Controller.
-{
-    const sq = admin.sq();
-    const reservation = try sq.reserveSlot();
-    errdefer sq.releaseReservation(reservation);
+#### Invalidation and lifetime
 
-    Sqe.init(reservation.slot, .{
-        .opcode = 0x06,
-        .command_id = reservation.command_id,
-        .namespace_id = .none,
-        .data_pointers = identify_dptr,
-        .cdw10 = 0x0000_0001, // CNS = 01h Identify Controller.
-    });
+The ring and CID bitmap MUST outlive the returned queue.
 
-    _ = sq.stage(reservation);
-    try sq.flush();
-}
+#### Complexity/progress
 
-var backoff = stdx.time.Backoff.init(nvme.controller.init.default_backoff_policy);
-const deadline = try stdx.time.Deadline.now(&admin.cq().clock, try stdx.time.Duration.fromMillis(500));
-const completion = try admin.pollOne(deadline, &backoff);
-std.debug.assert(completion.statusIsSuccess());
-```
+O(1), excluding the bounded allocator-wrap validation required by `CidAllocator`.
 
-### Throughput driver — batched submit + batched drain
+### Submission reserve, stage, release, and flush
 
-```zig
-// Submit a batch of reads. Every encode stages internally; the caller
-// controls when the doorbell rings.
-for (0..batch_size) |i| {
-    _ = try nvme.commands.nvm.Read.encode(io.sq(), reqs[i]);
-}
-try io.sq().flush();
+#### Contract
 
-// Drain up to 64 completions in one call, one CQ head doorbell ring.
-var completions: [64]nvme.controller.queue.Completion = undefined;
-const n = try io.poll(&completions, deadline, &backoff);
-for (completions[0..n]) |c| handle(c);
-```
+`isFull` MUST return true when `(tail + 1) % capacity == head`. `reserveSlot` MUST return `error.SubmissionQueueFull` without allocating a CID when the SQ is full. Otherwise, `reserveSlot` MUST allocate the lowest free CID, return the SQ slot at `tail`, and leave `tail` unchanged.
 
-### Multi-queue — one pair per core
+The caller MUST either pass a reservation to `stage` immediately or release it through `releaseReservation`. The caller MUST NOT interleave another reservation on the same SQ.
 
-```zig
-// After Set Features (Number of Queues) has returned an Allocated count,
-// the caller creates and initializes one Pair(Backend) per CPU core (or per
-// whatever routing policy the caller uses). znvme owns no aggregate.
-const io_pairs: []Pair = caller_composed_pairs;
+`stage` MUST assert that `reservation.slot_index == tail`, advance `tail` with wrap, and return the reservation CID and slot index. `stage` MUST NOT write MMIO.
 
-// Each thread drives its own pair; per-pair state stays caller-serialized.
-threads[core].run(io_pairs[core], workload);
-```
+`releaseReservation` MUST free the reservation CID and leave `tail` unchanged. Releasing an unallocated reservation is a caller-contract violation and MUST trap when runtime safety checks are enabled.
 
-### Full bring-up context (for reference)
+`flush` MUST write the current `tail` to the SQ tail doorbell, including when no new entries are staged. On success, `flush` MUST set `unflushed_tail = tail`.
 
-```zig
-const nvme = @import("nvme");
-const stdx = @import("stdx");
+#### State transitions
 
-const CidWord = nvme.controller.queue.CidAllocator.Word;
-const Cqe = nvme.commands.cqe.Cqe;
-const Pair = nvme.controller.queue.Pair(MyHpetBackend);
-const Sqe = nvme.commands.sqe.Sqe;
+- `reserveSlot`: allocates one CID; indices do not change.
+- `stage`: advances `tail`; CID remains allocated.
+- `releaseReservation`: releases one CID; indices do not change.
+- successful `flush`: sets `unflushed_tail` to `tail`.
 
-const capacity: u16 = 64;
-var sq_backing: [capacity]Sqe align(@alignOf(Sqe)) = .{.{}} ** capacity;
-var cq_backing: [capacity]Cqe align(@alignOf(Cqe)) = .{.{}} ** capacity;
-var cid_words: [stdx.bits.word.count(CidWord, capacity)]CidWord = @splat(0);
+#### Errors and fault behavior
 
-var admin_sq = try nvme.controller.queue.SubmissionQueue.init(.{
-    .qid = .admin,
-    .capacity = capacity,
-    .ring = try stdx.dma.Buffer(Sqe).init(&sq_backing, asq_addr),
-    .cid_words = &cid_words,
-    .doorbell = doorbells.submissionQueue(.admin),
-});
-var admin_cq = try Pair.Cq.init(.{
-    .qid = .admin,
-    .capacity = capacity,
-    .ring = try stdx.dma.Buffer(Cqe).init(&cq_backing, acq_addr),
-    .doorbell = doorbells.completionQueue(.admin),
-    .clock = .{ .backend = hpet_backend },
-});
-var admin = try Pair.init(admin_sq, admin_cq);
+`reserveSlot` MUST return `error.CidExhausted` when no CID is available. `flush` MUST propagate its doorbell error. On a `flush` error, `tail` and `unflushed_tail` MUST remain unchanged from their pre-call values. A retry MUST write the same tail.
 
-// Optional direct doorbell access reads as sq.doorbell().setTail(...); the
-// queue types encapsulate every write for correctness, so callers only need
-// this when composing their own diagnostics or panic paths.
-_ = admin.sq().doorbell();
-```
+#### Locking and waiting
 
-## Required tests
+Never.
 
-Test file `test/controller/queue_test.zig`. Naming per `docs/guidelines/testing.md`.
+#### Allocation behavior
 
-### `SubmissionQueue`
+No memory allocation. `reserveSlot` allocates one tag from caller-owned bitmap storage.
 
-- `unit: submission queue init rejects zero capacity`.
-- `unit: submission queue init rejects mismatched ring length`.
-- `unit: submission queue init reports zero outstanding empty state and hasStaged false`.
-- `unit: submission queue reserveSlot allocates lowest CID and returns builder bound to tail slot`.
-- `unit: submission queue reserveSlot does not advance tail`.
-- `unit: submission queue stage advances tail without ringing doorbell` — verifies the caller-owned MMIO byte buffer is unchanged after `stage` (contents equal the init-time value).
-- `unit: submission queue stage is infallible and returns Handle carrying reservation CID and slot_index`.
-- `unit: submission queue stage sets hasStaged true and flush clears it`.
-- `unit: submission queue flush rings SQ tail doorbell with current tail` — verifies the caller-owned MMIO byte buffer holds the expected tail value.
-- `unit: submission queue flush is idempotent — two flushes ring the same tail twice with no intervening stage`.
-- `unit: submission queue flush with no staged commits still rings current tail` — legal no-op from the wire's perspective; useful for retry paths.
-- `unit: submission queue stage N then flush once rings the batched tail` — stage 5, verify tail advanced 5, verify doorbell buffer unchanged; then flush, verify doorbell value equals `starting_tail + 5`.
-- `unit: submission queue flush retry after doorbell failure re-rings the same tail` — inject a doorbell error on first flush; verify tail and unflushed_tail unchanged; second flush succeeds and updates unflushed_tail.
-- `unit: submission queue reserveSlot rejects SubmissionQueueFull` — fills capacity, verifies the CID pool did not grow past capacity.
-- `unit: submission queue reserveSlot rejects CidExhausted` — pre-reserves every CID, verifies tail unchanged.
-- `unit: submission queue releaseReservation frees the CID and leaves tail unchanged`.
-- `unit: submission queue setHeadFromSqhd accepts controller-reported head and rejects capacity overflow with InvalidSubmissionQueueHead`.
-- `unit: submission queue doorbell returns the underlying SubmissionQueueDoorbell value`.
-- `roundtrip: submission queue reserveSlot then stage then flush stamps the reserved slot decoded through Sqe accessors and rings once`.
+#### NMI/interrupt safety
 
-### `CompletionQueue(Backend)`
+These operations provide no interrupt or NMI synchronization. A caller MAY use an operation in an interrupt context only when that context has exclusive ownership of the SQ and the platform permits the required memory or MMIO access.
 
-- `unit: completion queue init rejects zero capacity`.
-- `unit: completion queue init rejects mismatched ring length`.
-- `unit: completion queue pollOne returns Timeout when phase never matches and Deadline expires`.
-- `unit: completion queue pollOne consumes matching phase and rings CQ head doorbell once` — fabricated CQE at head slot; verify head advanced by one and doorbell store observed at `1`.
-- `unit: completion queue pollOne consumes a slot whose phase matches even after deadline passes`.
-- `unit: completion queue pollOne flips expected phase on wrap` — fill full capacity of completions; verify `expected_phase` toggles once when head wraps to zero.
-- `unit: completion queue pollOne composes stdx.io.poll.until with the caller Backoff`.
-- `unit: completion queue doorbell returns the underlying CompletionQueueDoorbell value`.
-- `unit: completion queue pollOne observes device-flipped phase after an initial miss`.
-- `unit: completion queue pollOne issues DMA acquire after phase match before CQE field decode`.
-- `unit: completion queue pollOne DMA acquire covers CQE fields only`.
-- `unit: completion queue poll drains N contiguous matched CQEs with one CQ head doorbell ring` — fabricate 5 CQEs starting at head; call `poll(buf[0..8])`; verify n == 5, head advanced 5, doorbell rung once with `head + 5`, and every buf slot decodes CID/SQID/SQHD.
-- `unit: completion queue poll stops at first phase mismatch even when out has room` — fabricate 3, leave rest with wrong phase; `poll(buf[0..8])` returns 3.
-- `unit: completion queue poll stops when out fills; remaining CQEs stay for next call` — fabricate 8, `poll(buf[0..3])` returns 3, second `poll(buf[0..8])` returns 5 without re-observing the first 3.
-- `unit: completion queue poll issues DMA acquire before each drained CQE field decode` — instrumented acquire counter equals count.
-- `unit: completion queue poll stops at wrap without spanning it` — head near capacity, 3 fabricated pre-wrap, 2 post-wrap; first `poll` returns 3, second `poll` returns 2 with expected_phase flipped.
-- `unit: completion queue poll retry after CQ head doorbell failure leaves head and phase unchanged and re-observes same completions`.
-- `unit: completion queue poll with empty out returns 0 without engaging Backoff` — deadline in the past; call returns 0 immediately.
-- `roundtrip: completion queue pollOne decodes cid sqid sqhd status dw0 and dw1 from a fabricated CQE`.
+#### Memory ordering
 
-### `Pair(Backend)`
+`flush` MUST publish staged SQE writes through the `stdx.barrier.mmio.release()` performed by `SubmissionQueueDoorbell.setTail` before its MMIO store.
 
-- `unit: pair init rejects mismatched qid` — `PairMismatch`.
-- `unit: pair init rejects mismatched capacity` — `PairMismatch`.
-- `unit: pair sq and cq return the composed pointers`.
-- `unit: pair pollOne returns SqidMismatch for CQE SQID mismatch without advancing state`.
-- `unit: pair pollOne returns InvalidSubmissionQueueHead for CQE SQHD outside capacity without advancing state`.
-- `unit: pair pollOne returns UnknownCommandId for unallocated CQE CID without advancing state`.
-- `unit: pair poll returns SqidMismatch mid-chunk without advancing state` — fabricate 4 good CQEs then one with wrong SQID; verify head/phase/sq.head/cids unchanged, out untouched.
-- `unit: pair poll returns InvalidSubmissionQueueHead mid-chunk without advancing state`.
-- `unit: pair poll returns UnknownCommandId mid-chunk without advancing state`.
-- `unit: pair poll drains N completions with one CQ head doorbell ring and releases every CID` — reserveSlot+stage N, flush, fabricate N CQEs, poll, verify n == N, sq.outstanding() == 0, cq head doorbell rung once.
-- `unit: pair poll retry after CQ head doorbell failure re-observes same completions`.
-- `unit: pair pollOne returns completions in the order the device posts them not the order the caller submitted` — fabricate CQEs out of submit order; verify `pollOne` returns them out of order.
-- `unit: releaseReservation still treats unallocated reservation CID as programmer error`.
-- `roundtrip: pair reserveSlot stage flush and pollOne returns matching handle and syncs SQ head`.
-- `roundtrip: pair poll across CQ wrap tracks SQ head from the last SQHD in the chunk`.
-- `roundtrip: pair batched submit and batched drain — stage N, flush once, poll into an N-slot buffer, verify one SQ doorbell and one CQ doorbell over the whole cycle`.
-- `roundtrip: two independent pairs drain their own CQs without cross-interference` — construct two `Pair(Backend)` values sharing no state; submit and drain on each; verify each pair's outstanding/head/expected_phase advances independently.
+#### Concurrency effects
+
+The caller MUST serialize all operations on one SQ.
+
+#### Invalidation and lifetime
+
+A reservation slot pointer remains valid until the caller stages or releases that reservation, provided the caller retains the ring storage. `stage` consumes the reservation. `releaseReservation` consumes the reservation. A `Handle` remains a value-only CID/slot correlation token; queue reset or destruction ends its useful lifetime.
+
+#### Complexity/progress
+
+Each operation is O(1) and wait-free with respect to software state. An MMIO store can still have platform-defined completion latency.
+
+### `CompletionQueue.drain`
+
+#### Contract
+
+If `out.len == 0`, `drain` MUST return `0` without loading a CQE or writing the CQ head doorbell.
+
+`drain` MUST load `Cqe.phase()` at `ring[head]`. If the phase does not equal `expected_phase`, `drain` MUST return `0` without a DMA acquire, state change, output write, or doorbell write.
+
+After the first phase match, `drain` MUST consume contiguous posted CQEs until `out` is full, a phase mismatches, or the CQ reaches its wrap boundary. One call MUST NOT consume CQEs on both sides of a wrap.
+
+For a non-empty drain, `drain` MUST write the new CQ head exactly once. It MUST update `head` only after the doorbell write succeeds. It MUST flip `expected_phase` only when the drain reaches the wrap boundary.
+
+#### State transitions
+
+An empty drain changes no state. A successful non-empty drain advances `head` by the returned count and flips `expected_phase` exactly when `head` wraps to zero.
+
+#### Errors and fault behavior
+
+`drain` MUST propagate `CqDrainError`. On a doorbell error, `head` and `expected_phase` MUST remain unchanged. The contents of `out` are unspecified on an error return, and the caller MUST NOT consume them. A retry MUST re-observe the same CQEs from the unchanged head.
+
+#### Locking and waiting
+
+Never. `drain` MUST NOT read the clock, invoke `Backoff`, sleep, yield, park, or call a scheduler.
+
+#### Allocation behavior
+
+Never.
+
+#### NMI/interrupt safety
+
+`drain` has no callback, allocator, clock, sleep, or lock dependency. znvme does not guarantee that the caller's MMIO mapping or platform is NMI-safe. A caller MAY invoke `drain` in an interrupt context only when that context has exclusive ownership of the CQ or pair and the platform permits the CQ head MMIO write. Concurrent process-context and interrupt-context drains are prohibited.
+
+#### Memory ordering
+
+`Cqe.phase()` MUST use an atomic monotonic load of the CQE status lane. `drain` MUST issue `stdx.barrier.dma.acquire()` after each matched phase load and before it reads the other fields of that CQE. This acquire orders CQE fields only. The caller MUST issue the applicable DMA acquire before it reads a separate device-written payload unless the payload API provides that ordering.
+
+#### Concurrency effects
+
+The caller MUST serialize all consumers of one CQ. An interrupt is a wake-up notification and is not proof that a CQE is posted.
+
+#### Invalidation and lifetime
+
+`out[0..n]` is initialized on success. The remaining output slots are unchanged. The CQ ring, output slice, and doorbell mapping MUST remain valid for the call.
+
+#### Complexity/progress
+
+O(min(`out.len`, entries before wrap)). The operation is bounded and does not retry.
+
+### `CompletionQueue.poll` and `pollOne`
+
+#### Contract
+
+If `out.len == 0`, `poll` MUST return `0` without waiting. Otherwise, `poll` MUST use `stdx.io.poll.until` to wait until `ring[head]` is posted. After the first phase match, `poll` MUST perform one `drain(out)` and MUST NOT wait again during that call.
+
+`pollOne` MUST call `poll` with a one-entry buffer and return that completion.
+
+#### Errors and fault behavior
+
+`poll` MUST return `error.Timeout` when `Backoff.next` reports timeout before the first phase match. After a phase match, the deadline MUST NOT truncate the drain. Doorbell errors follow `CompletionQueue.drain`.
+
+#### Locking and waiting
+
+`poll` and `pollOne` can spin, invoke the caller's `Backoff.Policy.yield`, or call the clock backend's `sleep`, according to `Backoff`. They do not select scheduler policy.
+
+#### Allocation behavior
+
+Never. `pollOne` uses one stack `Completion`.
+
+#### NMI/interrupt safety
+
+`poll` and `pollOne` MUST NOT be called from an interrupt or NMI context unless the caller's `Backoff`, clock backend, and platform explicitly permit every possible wait action. Interrupt consumers SHOULD use `drain`.
+
+#### Memory ordering
+
+After the first phase match, memory ordering is identical to `drain`.
+
+#### Concurrency effects
+
+The caller MUST provide exclusive ownership of the CQ and `Backoff` for the call.
+
+#### Complexity/progress
+
+O(wait attempts + min(`out.len`, entries before wrap)). Progress before the first CQE depends on the controller, deadline, clock backend, and backoff policy.
+
+### `Pair.drain`
+
+#### Contract
+
+`Pair.drain` MUST call `CompletionQueue.drain` in internal chunks of at most 64 completions. It MUST validate a complete chunk before it changes submission-side state or copies that chunk to caller output.
+
+For each completion, `Pair.drain` MUST return:
+
+- `error.SqidMismatch` when `completion.sqid != sq.qid`;
+- `error.InvalidSubmissionQueueHead` when `completion.sqhd >= sq.capacity`;
+- `error.UnknownCommandId` when the completion CID is not allocated or repeats an earlier CID in the same internal chunk.
+
+After chunk validation succeeds, `Pair.drain` MUST update `sq.head` in CQ order, release every CID, and copy the chunk to `out` in CQ order.
+
+#### State transitions
+
+An empty drain changes no state. A successful chunk advances CQ state, updates SQ head, and retires each chunk CID. The last CQE in CQ order determines the final SQ head for that chunk.
+
+#### Errors and fault behavior
+
+CQ doorbell errors follow `CompletionQueue.drain`. On a validation error, CQ state has already advanced and the CQ head doorbell has already been written. Submission-side state MUST remain unchanged for the failing chunk. The caller MUST treat the error as a controller fault and reset the pair. The caller MUST NOT consume `out` after any error return, including output produced by an earlier successful internal chunk.
+
+#### Locking and waiting
+
+Never.
+
+#### Allocation behavior
+
+Never. Each internal chunk uses at most 64 stack `Completion` values.
+
+#### NMI/interrupt safety
+
+The `CompletionQueue.drain` interrupt-context requirements apply. The interrupt context MUST also have exclusive ownership of submission-side CID and head state.
+
+#### Memory ordering
+
+CQE ordering is identical to `CompletionQueue.drain`. Pair validation and CID retirement occur after the CQ head doorbell succeeds.
+
+#### Concurrency effects
+
+The caller MUST serialize all SQ and CQ operations that use the pair. The caller MUST use a platform-owned event latch or an equivalent check-arm-recheck protocol to prevent a lost wake-up between an empty drain and a wait. znvme does not synchronize with the platform event source.
+
+#### Invalidation and lifetime
+
+Successful CID retirement invalidates outstanding-request ownership associated with each returned CID. Caller-owned request-table entries remain allocated; the caller decides when to reuse their contents.
+
+#### Complexity/progress
+
+O(min(`out.len`, posted CQEs)) CQ work plus O($n^2$) duplicate-CID comparisons per internal chunk, where $n \le 64$. One chunk performs at most 2,016 CID comparisons. The operation is bounded and does not retry.
+
+### `Pair.poll` and `pollOne`
+
+#### Contract
+
+If `out.len == 0`, `Pair.poll` MUST return `0` without waiting. Otherwise, it MUST wait only for the first posted CQE of the complete call and then use the same chunked completion path as `Pair.drain`. An empty CQ after an exactly full 64-entry internal chunk MUST end the drain without another wait.
+
+`Pair.pollOne` MUST call `Pair.poll` with a one-entry buffer and return that completion.
+
+#### Errors and fault behavior
+
+Timeout behavior follows `CompletionQueue.poll`. Drain and validation errors follow `Pair.drain`.
+
+#### Locking and waiting
+
+Only the first CQE can cause waiting. The caller MUST provide exclusive ownership of the pair and `Backoff`.
+
+#### Allocation behavior
+
+Never. Stack use is bounded by the 64-entry internal chunk and the one-entry `pollOne` buffer.
+
+#### NMI/interrupt safety
+
+The `CompletionQueue.poll` interrupt-context restrictions apply. Interrupt consumers SHOULD use `Pair.drain`.
+
+#### Memory ordering
+
+Identical to `Pair.drain` after the first phase match.
+
+#### Concurrency effects
+
+The caller MUST serialize every operation on the pair.
+
+#### Complexity/progress
+
+O(wait attempts + min(`out.len`, posted CQEs)). The call performs at most one wait phase.
+
+### Cross-boundary hooks
+
+`SubmissionQueue.setHeadFromSqhd` MUST reject `sqhd >= capacity` with `error.InvalidSubmissionQueueHead`. On success, it MUST set `head = sqhd`.
+
+`SubmissionQueue.releaseCompletedCid` MUST reject an unallocated or out-of-range CID with `error.UnknownCommandId`. On success, it MUST release that CID.
+
+These hooks never allocate or wait. Callers that compose an SQ and CQ without `Pair` MUST invoke both hooks for each successfully drained completion and MUST preserve the same validation ordering as `Pair.drain`.
 
 ### `RequestTable(RequestState)`
 
-- `unit: request table wrap rejects mismatched slice length with CapacityMismatch`.
-- `unit: request table at returns storage aliased with slots[cid.raw()]`.
-- `unit: request table with RequestState = void has zero-size backing`.
-- `roundtrip: pair pollOne plus request table correlates completion with prior state write` — submit N, populate the table under each `handle.command_id`, poll all N in device-chosen order, verify each result's `at(completion.cid)` state matches the submit-time write.
+`wrap` MUST reject `slots.len != capacity` with `error.CapacityMismatch`. `at` and `atConst` MUST return the slot at `cid.raw()`. They MUST assert `cid.raw() < capacity` because an out-of-range caller-authored CID is a programmer error.
 
-## Open questions
+The table borrows `slots`; the slice MUST outlive the table and every returned pointer. `at` and `atConst` do not allocate, wait, synchronize, or invalidate another pointer. Each operation is O(1).
 
-_(none)_
+## Implementation constraints
+
+- The implementation MUST use caller-owned storage and MUST NOT allocate.
+- The implementation MUST NOT install callbacks, handlers, locks, scheduler hooks, or hidden globals.
+- `CompletionQueue.poll` and `Pair.poll` MAY use private helpers, but private declarations MUST NOT become public API.
+- `CompletionQueue.drain` MUST be the single implementation of CQ phase probing, CQE decode, CQ head advancement, and phase flip used by both waiting and non-waiting paths.
+- `Pair.drain` MUST be the single implementation of chunk validation, SQ-head synchronization, CID retirement, and caller-output copy used by both waiting and non-waiting paths.
+- Internal chunk capacity MUST be 64 completions.
+- The implementation MUST preserve direct output writes before the fallible CQ doorbell store; it MUST NOT add an avoidable output copy only to preserve `out` on error.
+
+## Testing
+
+Test file: `test/controller/queue_test.zig`.
+
+### Submission queue
+
+Required tests MUST cover:
+
+- zero and mismatched capacity rejection;
+- initial empty state and outstanding count;
+- lowest-CID reservation without tail advance;
+- stage without MMIO, stage handle fields, and staged-state tracking;
+- one flush for one entry and for a batch;
+- idempotent flush and flush with no staged entries;
+- flush retry with unchanged state after doorbell failure;
+- SQ-full and CID-exhausted errors;
+- reservation release;
+- SQHD validation;
+- doorbell access;
+- reserve, initialize, stage, and flush round-trip behavior.
+
+### Completion queue
+
+Required tests MUST cover:
+
+- zero and mismatched capacity rejection;
+- empty-output drain without CQE load or doorbell write;
+- phase-mismatch drain with no state, output, clock, barrier, or doorbell effect;
+- matching-phase drain without clock or `Backoff` use;
+- contiguous drain stopping at mismatch;
+- output-capacity stop and continuation;
+- wrap stop, phase flip, and next-call consumption at index zero;
+- DMA acquire before every decoded CQE;
+- doorbell failure with unchanged CQ state and successful retry;
+- timeout before the first phase match;
+- an already-posted CQE despite an expired deadline;
+- first-CQE wait followed by drain without another backoff step;
+- empty-output poll without backoff;
+- complete CQE field decode and status round trip;
+- doorbell access.
+
+### Pair
+
+Required tests MUST cover:
+
+- QID and capacity mismatch rejection;
+- SQ and CQ accessors;
+- empty drain with no SQ/CQ state or CID change;
+- successful drain with SQHD update, CID retirement, and CQ-order output;
+- SQID, SQHD, unallocated-CID, and duplicate-CID validation failures after CQ advance with unchanged submission-side state for the failing chunk;
+- doorbell failure and retry;
+- device completion order independent of submission order;
+- reserve, stage, flush, and complete round trip;
+- CQ wrap and last-SQHD behavior;
+- batched SQ and CQ doorbell behavior;
+- two independent pairs without cross-interference;
+- exactly 64 completions followed by an empty CQ without a second wait.
+
+### Request table
+
+Required tests MUST cover:
+
+- mismatched slice length;
+- CID-indexed aliasing;
+- `RequestState = void`;
+- completion correlation with prior caller state.
+
+A process-aborting assertion failure is not a runtime unit-test requirement because Zig provides no repository-supported `expectPanic` equivalent. Positive tests and source-level assertions enforce programmer-error contracts.
+
+## Usage examples
+
+An interrupt is a notification only. A serialized consumer uses the phase tag as the readiness condition:
+
+```zig
+var completions: [64]nvme.controller.queue.Completion = undefined;
+
+while (true) {
+    const n = try pair.drain(&completions);
+    if (n != 0) {
+        for (completions[0..n]) |completion| handle(completion);
+        continue;
+    }
+
+    try platform_event.waitChecked(); // Platform-owned check-arm-recheck.
+}
+```

@@ -188,7 +188,7 @@ Per `docs/specs/architecture.md` §"Validation phases":
 
 ## Example usage
 
-Illustrative shape only; not part of the approved API. `docs/specs/controller/queue.md` owns the concrete completion polling path.
+Illustrative shape only; not part of the approved API. `docs/specs/controller/queue.md` owns non-waiting completion drain and deadline-driven completion polling.
 
 ```zig
 const nvme = @import("nvme");

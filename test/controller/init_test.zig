@@ -613,6 +613,23 @@ fn driveToReady(sub: RegSubstrate, ctrl: *Controller) !void {
     try ctrl.enable(enable_deadline, &backoff);
 }
 
+test "unit: controller admin drain delegates to the initialized pair" {
+    // Drive the controller to ready with an empty CQ and verify the facade preserves pair state.
+    var bar: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
+    const sub = try RegSubstrate.init(&bar, scriptedCap());
+
+    var storage: AdminStorage = .{};
+    var ctrl = try Controller.init(try makeConfig(sub.regs, try makeAdmin(&storage)));
+    try driveToReady(sub, &ctrl);
+
+    var out: [ADMIN_DEPTH]queue.Completion = undefined;
+    const n = try ctrl.admin.drain(out[0..]);
+
+    try testing.expectEqual(@as(usize, 0), n);
+    try testing.expectEqual(@as(u16, 0), ctrl.admin.sq().head);
+    try testing.expectEqual(@as(u16, 0), ctrl.admin.cq().head);
+}
+
 test "unit: controller shutdown normal sets CC.SHN to 01b and polls SHST to complete" {
     var bar: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
     const sub = try RegSubstrate.init(&bar, scriptedCap());

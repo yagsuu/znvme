@@ -20,7 +20,7 @@ pub const Opcode = enum(u8) {
 pub const Error = error{
     InvalidNamespaceIdentifier,
     InvalidLogicalBlockCount,
-} || queue.ReserveError;
+} || queue.SubmissionQueue.ReserveError;
 
 pub const Read = struct {
     pub const Cdw12 = packed struct(u32) {

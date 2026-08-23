@@ -35,7 +35,7 @@ This spec does not own:
 - fused-operation composition;
 - Metadata Pointer encoding — admin commands in the first slice use `MPTR = 0`;
 - Identify response byte parsing — `docs/specs/identify/controller.md`, `docs/specs/identify/namespace.md` (both `IdentifyNamespace` for CNS 00h and `List` for CNS 02h);
-- completion polling — `SubmissionQueue.stage` returns a `queue.Handle`; the caller flushes and polls through the owning `Pair(Backend)`;
+- completion consumption — `SubmissionQueue.stage` returns a `queue.Handle`; the caller flushes and then invokes `drain`, `poll`, or `pollOne` through the owning `Pair(Backend)`;
 - I/O queue creation policy (how many, which QIDs, negotiation logic) — the caller composes the sequence; `docs/specs/examples/controller-bringup.md` illustrates the full flow;
 - outstanding-QID tracking — this spec does not know whether a Create I/O SQ/CQ command references an already-created queue;
 - Abort admissibility — per NVMe, aborting a nonexistent CID is a silent no-op with success status; this spec does not pre-filter;
@@ -50,7 +50,7 @@ Composed through znvme types:
 
 - `controller.queue.SubmissionQueue` — `reserveSlot`, `stage`, `flush`, `releaseReservation`;
 - `controller.queue.Handle` — returned from `stage`, propagated by every builder;
-- `controller.queue.ReserveError` — merged into `admin.Error`;
+- `controller.queue.SubmissionQueue.ReserveError` — merged into `admin.Error`;
 - `commands.sqe.Sqe` — SQE authorship in place via `Sqe.init(reservation.slot, params)`;
 - `core.ids.Cid`, `core.ids.Nsid`, `core.ids.Qid` — identifier parameters and broadcast/reserved predicates;
 - `core.prp.DataPointers` — DPTR values for Identify, Create I/O CQ/SQ.
@@ -117,7 +117,7 @@ First-slice `PC` is always `1` (physically contiguous). The caller supplies cont
 
 `[nvme]` PRP1: CQ base DMA address, memory-page-aligned. NSID cleared to `0`.
 
-First-slice `IEN` defaults to `0` (polled completion path). `IV` is caller-supplied but is ignored by the controller when `IEN = 0`. The caller wraps contiguous, page-aligned CQ memory through `core.prp.IoQueueBase.fromContiguous(buffer, page_size)`, and the builder writes `PRP1 = base.prp1` with `PRP2 = 0`.
+`IEN` defaults to `0`. `[nvme]` The controller ignores `IV` when `IEN = 0`. If the caller sets `IEN = 1`, the caller MUST configure and own the corresponding interrupt delivery path before it submits this command. The caller wraps contiguous, page-aligned CQ memory through `core.prp.IoQueueBase.fromContiguous(buffer, page_size)`. The builder writes `PRP1 = base.prp1` and `PRP2 = 0`.
 
 ### Delete I/O Submission Queue / Delete I/O Completion Queue — opcodes `00h` / `04h`
 
@@ -273,7 +273,7 @@ pub const Error = error{
     InvalidQueueIdentifier,
     InvalidQueueSize,
     InvalidQueueCount,
-} || queue.ReserveError;
+} || queue.SubmissionQueue.ReserveError;
 
 pub const DeleteQueueCdw10 = packed struct(u32) {
     qid: u16,
@@ -779,14 +779,14 @@ pub const NumberOfQueues = struct {
 
 | Operation | Allocation | Waiting | Bounds | Concurrency | Ordering | Errors |
 | --- | --- | --- | --- | --- | --- | --- |
-| `Identify.controller` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` (SQ tail doorbell) | `queue.ReserveError` |
-| `Identify.namespace` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidNamespaceIdentifier` |
-| `Identify.activeNamespaceList` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError` |
-| `CreateIoCompletionQueue.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueIdentifier`, `InvalidQueueSize` |
-| `CreateIoSubmissionQueue.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueIdentifier`, `InvalidQueueSize` |
-| `DeleteIoSubmissionQueue.encode` / `DeleteIoCompletionQueue.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueIdentifier` |
-| `Abort.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueIdentifier` |
-| `NumberOfQueues.set` / `NumberOfQueues.get` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidQueueCount` |
+| `Identify.controller` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` (SQ tail doorbell) | `queue.SubmissionQueue.ReserveError` |
+| `Identify.namespace` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.SubmissionQueue.ReserveError`, `InvalidNamespaceIdentifier` |
+| `Identify.activeNamespaceList` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.SubmissionQueue.ReserveError` |
+| `CreateIoCompletionQueue.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.SubmissionQueue.ReserveError`, `InvalidQueueIdentifier`, `InvalidQueueSize` |
+| `CreateIoSubmissionQueue.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.SubmissionQueue.ReserveError`, `InvalidQueueIdentifier`, `InvalidQueueSize` |
+| `DeleteIoSubmissionQueue.encode` / `DeleteIoCompletionQueue.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.SubmissionQueue.ReserveError`, `InvalidQueueIdentifier` |
+| `Abort.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.SubmissionQueue.ReserveError`, `InvalidQueueIdentifier` |
+| `NumberOfQueues.set` / `NumberOfQueues.get` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.SubmissionQueue.ReserveError`, `InvalidQueueCount` |
 | `NumberOfQueues.ResponseDw0.fromRaw` / `.allocated` / `.raw` | never | never | O(1) | value type | none | infallible |
 | per-command `Cdw*` / `Dw*` `fromRaw` / `raw` | never | never | O(1) | value type | none | infallible |
 

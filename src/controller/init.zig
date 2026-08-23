@@ -36,7 +36,7 @@ pub const Error = error{
     PageSizeUnsupported,
     UnsupportedCommandSet,
     AdminPairMismatch,
-} || QueueBase.Error || Aqa.Error || stdx.time.Duration.Error || queue.InitError || queue.ReserveError || queue.FlushError || queue.PollError;
+} || QueueBase.Error || Aqa.Error || stdx.time.Duration.Error || queue.InitError || queue.SubmissionQueue.ReserveError || queue.SubmissionQueue.FlushError || queue.PollError;
 
 pub const default_backoff_policy: stdx.time.Backoff.Policy = .{
     .spin_iterations = 128,
@@ -76,6 +76,17 @@ pub fn Controller(comptime Backend: type) type {
             pub fn cq(self: *Admin) *Pair.Cq {
                 std.debug.assert(self.ready());
                 return self._pair.?.cq();
+            }
+
+            /// Consumes already-posted admin completions without allocating or
+            /// waiting. Requires an initialized admin pair and preserves the
+            /// `Pair.drain` error and output-validity contracts.
+            pub fn drain(
+                self: *Admin,
+                out: []queue.Completion,
+            ) queue.DrainError!usize {
+                std.debug.assert(self.ready());
+                return self._pair.?.drain(out);
             }
 
             pub fn pollOne(

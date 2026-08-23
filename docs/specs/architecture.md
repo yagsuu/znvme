@@ -15,7 +15,7 @@ layouts and controller mechanics required by the NVM Command Set boot path.
 It serves two consumers:
 
 - A host driver composes controller access, queue pairs, command builders, and
-  completion polling.
+  either deadline-driven completion polling or non-waiting completion drain.
 - A device emulator composes the same wire layouts and validation views to
   interpret host requests and write device responses.
 
@@ -140,9 +140,14 @@ A caller submits one command through this sequence:
 2. The encoder writes the SQE and stages the reservation.
 3. The caller calls `SubmissionQueue.flush` to publish every staged SQE with
    one tail-doorbell write.
-4. The caller polls the matching `Pair` or completion queue with a deadline
-   and backoff.
-5. The queue advances the completion head and retires the command identifier.
+4. The caller either polls the matching `Pair` with a deadline and backoff or
+   invokes `Pair.drain` after a caller-owned notification.
+5. The pair advances the completion head, validates the completion, updates
+   the submission head, and retires the command identifier.
+
+A caller that composes `SubmissionQueue` and `CompletionQueue(Backend)` without
+`Pair` MUST invoke the submission queue cross-boundary hooks for each drained
+completion.
 
 A `SubmissionQueue`, `CompletionQueue(Backend)`, or `Pair(Backend)` has no
 internal synchronization. The caller serializes calls on each queue pair. One
@@ -159,7 +164,7 @@ upstream `stdx` gap, not a reason to implement a local replacement.
 | --- | --- |
 | `io.MMIO.Window` and `io.MMIO.Register(T)` | Controller registers and doorbells. |
 | `barrier.mmio.*` and `barrier.dma.*` | MMIO publication and completion visibility ordering. |
-| `time.Clock.Monotonic(Backend)`, `Deadline`, and `Backoff` | Controller and completion polling. |
+| `time.Clock.Monotonic(Backend)`, `Deadline`, and `Backoff` | Controller polling and deadline-driven completion polling. |
 | `dma.Buffer(T)` and `addr.DMAAddr` | Caller-owned queue and transfer storage. |
 | `tags.Tag` and `tags.TagAllocator.Bounded` | Strong NVMe identifiers and outstanding command identifiers. |
 | `bytes.Cursor` and `bytes.load*` | Identify-byte validation. |

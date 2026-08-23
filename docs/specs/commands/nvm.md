@@ -31,7 +31,7 @@ This spec does not own:
 - MDTS enforcement — `IdentifyController.maxDataTransferSize()` is caller policy; the NVM builder trusts caller sizing;
 - `DataPointers` construction, payload PRP-list emission, and page-alignment validation — `docs/specs/core/prp.md`;
 - completion `DW0` / `DW1` interpretation — Read, Write, and Flush return no meaningful command-specific completion dwords;
-- completion polling and timeouts — `SubmissionQueue.stage` returns a `queue.Handle`; the caller flushes and polls through the owning `Pair(Backend)`;
+- completion consumption and timeouts — `SubmissionQueue.stage` returns a `queue.Handle`; the caller flushes and then invokes `drain`, `poll`, or `pollOne` through the owning `Pair(Backend)`;
 - outstanding-NSID tracking, namespace-active checks, or MDTS-vs-payload cross-checks;
 - SGL descriptors and the SGL `Psdt` selection;
 - big-endian host or target compatibility.
@@ -44,7 +44,7 @@ Composed through znvme types:
 
 - `controller.queue.SubmissionQueue` — `reserveSlot`, `stage`, `flush`, `releaseReservation`;
 - `controller.queue.Handle` — returned from `stage`, propagated by every builder;
-- `controller.queue.ReserveError` — merged into `nvm.Error`;
+- `controller.queue.SubmissionQueue.ReserveError` — merged into `nvm.Error`;
 - `commands.sqe.Sqe` — SQE authorship in place via `Sqe.init(reservation.slot, params)`;
 - `core.ids.Nsid` — namespace-identifier parameters and admissibility predicates;
 - `core.prp.DataPointers` — DPTR values for Read and Write.
@@ -158,7 +158,7 @@ pub const Opcode = enum(u8) {
 pub const Error = error{
     InvalidNamespaceIdentifier,
     InvalidLogicalBlockCount,
-} || queue.ReserveError;
+} || queue.SubmissionQueue.ReserveError;
 
 pub const Read = struct {
     pub const Cdw12 = packed struct(u32) {
@@ -311,9 +311,9 @@ pub const Flush = struct {
 
 | Operation | Allocation | Waiting | Bounds | Concurrency | Ordering | Errors |
 | --- | --- | --- | --- | --- | --- | --- |
-| `Read.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` (SQ tail doorbell) | `queue.ReserveError`, `InvalidNamespaceIdentifier`, `InvalidLogicalBlockCount` |
-| `Write.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidNamespaceIdentifier`, `InvalidLogicalBlockCount` |
-| `Flush.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.ReserveError`, `InvalidNamespaceIdentifier` |
+| `Read.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` (SQ tail doorbell) | `queue.SubmissionQueue.ReserveError`, `InvalidNamespaceIdentifier`, `InvalidLogicalBlockCount` |
+| `Write.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.SubmissionQueue.ReserveError`, `InvalidNamespaceIdentifier`, `InvalidLogicalBlockCount` |
+| `Flush.encode` | never | never | O(1) | caller-serialized per SQ | ordered by caller `sq.flush()` | `queue.SubmissionQueue.ReserveError`, `InvalidNamespaceIdentifier` |
 | `Read.Cdw12.fromRaw` / `.raw` | never | never | O(1) | value type | none | infallible |
 | `Write.Cdw12.fromRaw` / `.raw` | never | never | O(1) | value type | none | infallible |
 

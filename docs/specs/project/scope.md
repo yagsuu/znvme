@@ -2,9 +2,9 @@
 
 Status: Approved.
 
-`znvme` is a Zig-native NVMe protocol library for firmware-class polled boot readers. It owns the NVMe 2.0 wire protocol and controller mechanics needed for the NVM Command Set boot path. Every domain-neutral primitive it composes comes from `stdx`.
+`znvme` is a Zig-native NVMe protocol library for firmware-class boot readers. It owns the NVMe 2.0 wire protocol and controller mechanics needed for the NVM Command Set boot path. Every domain-neutral primitive it composes comes from `stdx`.
 
-`znvme` is not a kernel driver framework, an OS storage stack, a PCI enumerator, a UEFI protocol implementation, a filesystem, an allocator, or an interrupt-driven driver.
+`znvme` is not a kernel driver framework, an OS storage stack, a PCI enumerator, a UEFI protocol implementation, a filesystem, an allocator, or an interrupt provider.
 
 ## Package identity
 
@@ -28,7 +28,7 @@ Public examples use `const nvme = @import("nvme");` and `const stdx = @import("s
 - Controller register-block layout uses typed `stdx.io.MMIO.Window` accessors and compile-time size, alignment, offset, and bit-size assertions for NVMe-defined fields.
 - CC/CSTS enable, ready, shutdown, and CFS state transitions follow the NVMe controller register semantics.
 - The initialization state machine runs over an injected `stdx.time.Clock.Monotonic(Backend)`.
-- The queue model is one admin queue pair plus N caller-owned polled I/O queue pairs, where N is negotiated via Set Features (Number of Queues).
+- The queue model is one admin queue pair plus N caller-owned I/O queue pairs, where N is negotiated via Set Features (Number of Queues). Queue pairs support non-waiting completion drain and deadline-driven completion polling.
 - Identify Controller, Identify Namespace, and Active Namespace ID list structures use NVMe CNS values and field definitions.
 - `znvme` exposes decoding views for Identify Controller, Identify Namespace, and Active Namespace ID list responses.
 - Admin command builders cover Identify, Create/Delete I/O SQ/CQ, Set/Get Features, and Abort opcodes defined by NVMe.
@@ -43,8 +43,8 @@ Everything else — device enumeration, DMA provisioning, UEFI protocol installa
 
 `znvme` is designed for two role-symmetric consumers of the same wire and mechanics primitives:
 
-- **Host driver (primary consumer).** Firmware boot readers such as zfw compose the register accessors, doorbell arithmetic, admin/NVM command builders, and completion-polling loop to bring a controller up and read namespaces. Every approved API section names this the "host" path.
-- **Device emulator (equal-standing seam).** Software NVMe device implementations such as zvm compose the same wire structs (`Sqe`, `Cqe`, `IdentifyController`, `IdentifyNamespace`), register-block accessors, and byte-window validators to interpret host writes and author device responses. Approved API sections label device-authoring entry points explicitly (`ControllerRegisters.storeCap` / `storeVersion` / `storeCsts`, `Cqe.isPostedSuccess`, `Cqe.init`, `CompletionStatus.init` / `success` / `genericFailure`, `Sqe.validate`, admin `Cdw*.fromRaw`, `IdentifyController.init`, `IdentifyNamespace.init`).
+- **Host driver (primary consumer).** Firmware boot readers such as zfw compose the register accessors, doorbell arithmetic, admin/NVM command builders, and queue completion APIs to bring a controller up and read namespaces. A host can use deadline-driven polling or a caller-owned interrupt notification with non-waiting CQ drain.
+- **Device emulator (equal-standing seam).** Software NVMe device implementations such as zvm compose the same wire structs (`Sqe`, `Cqe`, `IdentifyController`, `IdentifyNamespace`), register-block accessors, and byte-window validators to interpret host writes and author device responses. Normative API sections label device-authoring entry points explicitly (`ControllerRegisters.storeCap` / `storeVersion` / `storeCsts`, `Cqe.isPostedSuccess`, `Cqe.init`, `CompletionStatus.init` / `success` / `genericFailure`, `Sqe.validate`, admin `Cdw*.fromRaw`, `IdentifyController.init`, `IdentifyNamespace.init`).
 
 The shared wire, layout assertions, and byte-window validators are the seam between both consumers. `znvme` does not implement a controller state machine or a guest-DMA translator; the emulator supplies those, using `znvme` as the wire authority.
 
@@ -74,7 +74,7 @@ The shared wire, layout assertions, and byte-window validators are the seam betw
 - Queue and transfer storage supplied through `stdx.dma.Buffer(T)` (`../zstdx/docs/specs/dma/buffer.md`).
 - UEFI protocol ABI types and protocol installation (`EFI_BLOCK_IO_PROTOCOL`, `EFI_DISK_IO_PROTOCOL`, ...).
 - Device-path node construction.
-- Interrupt policy; `znvme` is polled and the caller drives every completion loop.
+- Interrupt provisioning and policy, including MSI/MSI-X configuration, vector routing, handler registration, masking, acknowledgement, deferred-work scheduling, and event-latch synchronization. `znvme` supplies only the NVMe `IEN` / `IV` command fields and non-waiting CQ drain.
 - The monotonic time backend consumed by `stdx.time.Clock.Monotonic(Backend)`.
 - The firmware's namespace-selection policy.
 
@@ -105,7 +105,7 @@ Consumed `stdx` surfaces:
 - PRP1, PRP2, ASQ, and ACQ encoders write `dmaAddr().raw()` into the corresponding NVMe wire dword/qword lane.
 - `stdx.tags.Tag(Domain, u16)` — the strong-typed identifier used inside `Nsid`, `Cid`, and `Qid`.
 - `stdx.tags.TagAllocator.Bounded(CidDomain, u16)` — outstanding-CID pool backing the submission queue, over a caller-owned bitmap.
-- `stdx.io.poll.until` — caller-driven poll loop composing `Deadline`, `Backoff`, and a per-method predicate.
+- `stdx.io.poll.until` — caller-driven deadline wait composing `Deadline`, `Backoff`, and a phase predicate before the queue drain.
 
 A primitive `znvme` needs that `stdx` does not yet provide is a gap, not a local implementation opportunity. Gaps are proposed upstream against `../zstdx` before the consuming `znvme` spec lands. `znvme` does not shadow, wrap, or reimplement a `stdx` primitive. A temporary experiment during scoping lives behind a clearly named internal type and names the upstream primitive it will be replaced by.
 
@@ -117,16 +117,18 @@ Unmarked normative claims are znvme design decisions. An unmarked NVMe-authorita
 
 The project-design marker is retired and should not appear in current specs. Non-normative prose such as motivation, examples, and background stays unmarked.
 
-## Status labels
+## Inline decision labels
 
-Specs and ledger entries use exactly these four labels.
+Specification document status lines use `Status: Draft.`, `Status: Approved.`, or `Status: Superseded by <path>.` as required by `docs/guidelines/spec-writing.md`.
+
+Planning ledgers and specification content MAY use these inline decision labels:
 
 - **`[Approved]`** — accepted project fact or decision; the contract is stable.
 - **`[Draft proposal]`** — candidate design under review; implementation does not depend on it.
-- **`[Open question]`** — unresolved; implementation stops at the boundary and either updates the spec with an approved decision or isolates a clearly named unstable interface.
-- **`[Deferred]`** — intentionally out of the current target; implementation does not land until an approved spec opens the gate.
+- **`[Open question]`** — unresolved; implementation stops at the boundary and either updates the specification with an approved decision or isolates a clearly named unstable interface.
+- **`[Deferred]`** — intentionally out of the current target; implementation does not land until an approved specification opens the gate.
 
-The label sits at the head of the item it qualifies.
+An inline label MUST appear at the head of the item that it qualifies. An inline label MUST NOT replace the specification document status line.
 
 ## Transcription sources
 
@@ -149,7 +151,7 @@ Any planning entry moved from `Queue` to `Approved` in `docs/planning/spec-queue
 
 ### Approved
 
-- `docs/specs/project/scope.md` — project purpose, ownership boundary, dependencies, status labels, deferred gates, and source index.
+- `docs/specs/project/scope.md` — project purpose, ownership boundary, dependencies, document statuses, inline decision labels, deferred gates, and source index.
 - `docs/specs/architecture.md` — layering, the two type worlds, host-testability, validation phases, source-creation gate, build shape, and test aggregation.
 - `docs/specs/core/ids.md` — `Nsid`, `Cid`, and `Qid` newtypes and bounds.
 - `docs/specs/core/dma.md` — delegation record; DMA primitives remain owned by `stdx.dma.*`.
@@ -185,7 +187,7 @@ Any planning entry moved from `Queue` to `Approved` in `docs/planning/spec-queue
 - Block-device abstractions or partition-table parsers.
 - Filesystems.
 - Namespace selection policy for the boot device.
-- Allocators, event loops, and interrupt-driven completion paths.
+- Allocators and event loops. Interrupt provisioning, delivery, handlers, and synchronization remain caller-owned; queue pairs expose only non-waiting completion drain.
 - A ready-made multi-queue reactor, scheduler, or per-core dispatcher — `znvme` owns queue-pair mechanics but no aggregate over multiple pairs.
 - Scatter/Gather List (SGL) transfers.
 - Namespaces outside the NVM Command Set.
@@ -196,17 +198,15 @@ Any planning entry moved from `Queue` to `Approved` in `docs/planning/spec-queue
 
 Deferred items are gates: implementation does not land until the named approved spec exists.
 
-- **Shared CQ backing multiple SQs.** `[Deferred]` Per-CQE `SQID` routing to alternate SQs does not land until an approved spec claims that shape; one `Pair(Backend)` currently binds one SQ to one CQ.
-- **SGL transfers.** `[Deferred]` SGL transfer support does not land until an approved `commands/sgl.md` spec defines descriptor encoding, ownership, and tests.
-- **Non-NVM command sets.** `[Deferred]` Command sets other than `CC.CSS = 0` do not land until approved command-set specs define their register, command, and identify views.
-- **Interrupt-driven completion.** `[Deferred]` Interrupt-driven completion does not land until an approved controller-mode spec defines ownership, API shape, ordering, and tests.
-- **Non-x86_64 targets.** `[Deferred]` Non-x86_64 target support does not land until an approved architecture spec defines `stdx.barrier.mmio.*`, `stdx.barrier.dma.*`, and `stdx.arch` mappings for that target.
-- **Big-endian compatibility.** `[Deferred]` `[nvme]` NVMe wire data is little-endian.
-  Non-little-endian target support does not land until approved wire specs add explicit byte-order coverage and tests.
+- `[Deferred]` **Shared CQ backing multiple SQs.** Per-CQE `SQID` routing to alternate SQs does not land until an approved specification claims that shape. One `Pair(Backend)` currently binds one SQ to one CQ.
+- `[Deferred]` **SGL transfers.** SGL transfer support does not land until an approved `commands/sgl.md` specification defines descriptor encoding, ownership, and tests.
+- `[Deferred]` **Non-NVM command sets.** Command sets other than `CC.CSS = 0` do not land until approved command-set specifications define their register, command, and identify views.
+- `[Deferred]` **Non-x86_64 targets.** Non-x86_64 target support does not land until an approved architecture specification defines `stdx.barrier.mmio.*`, `stdx.barrier.dma.*`, and `stdx.arch` mappings for that target.
+- `[Deferred]` **Big-endian compatibility.** `[nvme]` NVMe wire data is little-endian. Non-little-endian target support does not land until approved wire specifications add explicit byte-order coverage and tests.
 
-## Rule for API sketches
+## Rule for API snippets
 
-Code blocks in spec documents are illustrative unless the section is explicitly labeled **Approved API**. Illustrative code discusses shape and usage; implementation must not treat it as a stable ABI or source contract.
+Code blocks in a `## API` section are normative public signatures. Code blocks in legacy `## Approved API` sections remain normative until a substantial revision moves the specification to the current section model. Other code blocks are illustrative unless the specification explicitly marks them normative.
 
 ## Rule for unresolved details
 

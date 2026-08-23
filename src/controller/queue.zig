@@ -16,41 +16,34 @@ const SubmissionQueueDoorbell = @import("../core/doorbell.zig").SubmissionQueueD
 
 pub const CidAllocator = stdx.tags.TagAllocator.Bounded(ids.CidDomain, u16);
 
-/// Reserve-side errors: SQ capacity and CID exhaustion.
-pub const ReserveError = error{
-    SubmissionQueueFull,
-    CidExhausted,
-} || CidAllocator.Error;
+pub const CqDrainError = CompletionQueueDoorbell.Error;
 
-/// Flush errors bubble up straight from the SQ tail doorbell.
-pub const FlushError = SubmissionQueueDoorbell.Error;
-
-/// Completion-queue drain errors: timeout and CQ head doorbell.
 pub const CqPollError = error{
     Timeout,
-} || CompletionQueueDoorbell.Error;
+} || CqDrainError;
 
-/// Pair drain errors: `CqPollError` plus per-completion validation.
-pub const PollError = error{
+pub const DrainError = error{
     SqidMismatch,
     InvalidSubmissionQueueHead,
     UnknownCommandId,
-} || CqPollError;
+} || CqDrainError;
 
-/// Init-time errors for `SubmissionQueue.init`, `CompletionQueue.init`, and `Pair.init`.
+pub const PollError = error{
+    Timeout,
+} || DrainError;
+
 pub const InitError = error{
     CapacityMismatch,
     PairMismatch,
 } || CidAllocator.Error;
 
-/// Retire token from `stage`; correlates a staged SQE with its CQE.
 pub const Handle = struct {
     command_id: Cid,
     slot_index: u16,
 };
 
-/// Decoded CQE + retired CID. Phase is already matched by the `poll` that
-/// produced this value; callers do not re-check.
+/// Decoded CQE returned after phase matching. `Pair` also retires the CID;
+/// direct `CompletionQueue` users must apply the submission-queue hooks.
 pub const Completion = struct {
     cid: Cid,
     sqid: Qid,
@@ -67,20 +60,6 @@ pub const Completion = struct {
 /// Host-side submission ring: reserve → stage → flush → release. Caller
 /// serializes all methods; concurrent access is unsupported.
 pub const SubmissionQueue = struct {
-    pub const Init = struct {
-        qid: Qid,
-        capacity: u16,
-        ring: stdx.dma.Buffer(Sqe),
-        cid_words: []CidAllocator.Word,
-        doorbell: SubmissionQueueDoorbell,
-    };
-
-    pub const Reservation = struct {
-        slot_index: u16,
-        command_id: Cid,
-        slot: *Sqe,
-    };
-
     qid: Qid,
     capacity: u16,
     ring: stdx.dma.Buffer(Sqe),
@@ -89,6 +68,27 @@ pub const SubmissionQueue = struct {
     head: u16 = 0,
     cids: CidAllocator,
     db: SubmissionQueueDoorbell,
+
+    pub const ReserveError = error{
+        SubmissionQueueFull,
+        CidExhausted,
+    } || CidAllocator.Error;
+
+    pub const FlushError = SubmissionQueueDoorbell.Error;
+
+    pub const Reservation = struct {
+        slot_index: u16,
+        command_id: Cid,
+        slot: *Sqe,
+    };
+
+    pub const Init = struct {
+        qid: Qid,
+        capacity: u16,
+        ring: stdx.dma.Buffer(Sqe),
+        cid_words: []CidAllocator.Word,
+        doorbell: SubmissionQueueDoorbell,
+    };
 
     pub fn init(params: Init) InitError!SubmissionQueue {
         if (params.capacity == 0) return error.CapacityMismatch;
@@ -164,17 +164,17 @@ pub const SubmissionQueue = struct {
 
     /// Update `head` from a completion's `sqhd`. Cross-boundary hook: callers
     /// composing `SubmissionQueue` and `CompletionQueue` without `Pair` invoke
-    /// this per completion after `CompletionQueue.poll` returns.
-    pub fn setHeadFromSqhd(self: *SubmissionQueue, sqhd: u16) PollError!void {
+    /// this per completion after `CompletionQueue.drain` or `poll` returns.
+    pub fn setHeadFromSqhd(self: *SubmissionQueue, sqhd: u16) DrainError!void {
         if (sqhd >= self.capacity) return error.InvalidSubmissionQueueHead;
         self.head = sqhd;
     }
 
     /// Release a device-completed CID. Cross-boundary hook: callers composing
     /// `SubmissionQueue` and `CompletionQueue` without `Pair` invoke this per
-    /// completion after `CompletionQueue.poll` returns. Returns
+    /// completion after `CompletionQueue.drain` or `poll` returns. Returns
     /// `UnknownCommandId` when the CID was never allocated in this SQ.
-    pub fn releaseCompletedCid(self: *SubmissionQueue, cid: Cid) PollError!void {
+    pub fn releaseCompletedCid(self: *SubmissionQueue, cid: Cid) DrainError!void {
         self.cids.freeOne(cid.tag) catch |err| switch (err) {
             error.OutOfBounds, error.NotAllocated => return error.UnknownCommandId,
         };
@@ -186,6 +186,14 @@ pub const SubmissionQueue = struct {
 /// serializes all methods.
 pub fn CompletionQueue(comptime Backend: type) type {
     return struct {
+        qid: Qid,
+        capacity: u16,
+        ring: stdx.dma.Buffer(Cqe),
+        head: u16 = 0,
+        expected_phase: u1 = 1,
+        db: CompletionQueueDoorbell,
+        clock: Clock,
+
         const Self = @This();
 
         pub const Clock = stdx.time.Clock.Monotonic(Backend);
@@ -197,14 +205,6 @@ pub fn CompletionQueue(comptime Backend: type) type {
             doorbell: CompletionQueueDoorbell,
             clock: Clock,
         };
-
-        qid: Qid,
-        capacity: u16,
-        ring: stdx.dma.Buffer(Cqe),
-        head: u16 = 0,
-        expected_phase: u1 = 1,
-        db: CompletionQueueDoorbell,
-        clock: Clock,
 
         pub fn init(params: Init) InitError!Self {
             if (params.capacity == 0) return error.CapacityMismatch;
@@ -223,49 +223,19 @@ pub fn CompletionQueue(comptime Backend: type) type {
             return self.db;
         }
 
-        /// Drain contiguous matched CQEs into `out`. Waits on the FIRST completion
-        /// via `stdx.io.poll.until`; subsequent slots are probed without engaging
-        /// `Backoff`. Rings the CQ head doorbell exactly once at the end.
-        ///
-        /// Returns the number of completions written into `out[0..]`.
-        /// On error, `head`/`expected_phase` are unchanged and `out` is untouched.
-        pub fn poll(
-            self: *Self,
-            out: []Completion,
-            deadline: stdx.time.Deadline,
-            backoff: *stdx.time.Backoff,
-        ) CqPollError!usize {
+        /// Consumes already-posted CQEs without allocating, reading the clock,
+        /// or waiting. Returns zero when the phase at `head` does not match. On
+        /// doorbell error, queue state is unchanged and the caller must not
+        /// consume `out`.
+        pub fn drain(self: *Self, out: []Completion) CqDrainError!usize {
             if (out.len == 0) return 0;
 
-            // Wait on the first completion.
-            const FirstPredicate = struct {
-                cq: *Self,
-
-                pub fn call(p: @This()) CqPollError!?void {
-                    const slot = &p.cq.ring.constSlice()[p.cq.head];
-                    if (slot.phase() != (p.cq.expected_phase != 0)) return null;
-                    return {};
-                }
-            };
-            _ = try stdx.io.poll.until(
-                &self.clock,
-                deadline,
-                backoff,
-                FirstPredicate{ .cq = self },
-            );
-
-            // Drain contiguous matched CQEs without wrapping. `count += 1`
-            // inline before the wrap check: Zig's `while (...) : (expr)`
-            // continue-expression does not fire on `break`.
             var count: usize = 0;
             var probe = self.head;
             var wrapped = false;
             while (count < out.len) {
                 const slot = &self.ring.constSlice()[probe];
-                if (count > 0) {
-                    // First slot's phase already matched inside poll.until.
-                    if (slot.phase() != (self.expected_phase != 0)) break;
-                }
+                if (slot.phase() != (self.expected_phase != 0)) break;
 
                 stdx.barrier.dma.acquire();
                 out[count] = .{
@@ -281,18 +251,30 @@ pub fn CompletionQueue(comptime Backend: type) type {
                 const next = probe +% 1;
                 if (next == self.capacity) {
                     wrapped = true;
-                    break; // Stop at wrap; next call handles the flip.
+                    break;
                 }
                 probe = next;
             }
+            if (count == 0) return 0;
+
             const new_head: u16 = @intCast((self.head + count) % self.capacity);
             try self.db.setHead(new_head);
 
-            // Flip phase from `wrapped`, not `new_head < self.head`: the
-            // latter misses the head=0 full-wrap where both are zero.
             if (wrapped) self.expected_phase ^= 1;
             self.head = new_head;
             return count;
+        }
+
+        /// Waits for the first posted CQE, then drains without another wait.
+        pub fn poll(
+            self: *Self,
+            out: []Completion,
+            deadline: stdx.time.Deadline,
+            backoff: *stdx.time.Backoff,
+        ) CqPollError!usize {
+            if (out.len == 0) return 0;
+            try self.waitForFirst(deadline, backoff);
+            return self.drain(out);
         }
 
         pub fn pollOne(
@@ -305,6 +287,28 @@ pub fn CompletionQueue(comptime Backend: type) type {
             std.debug.assert(n == 1);
             return buf[0];
         }
+
+        fn waitForFirst(
+            self: *Self,
+            deadline: stdx.time.Deadline,
+            backoff: *stdx.time.Backoff,
+        ) CqPollError!void {
+            const FirstPredicate = struct {
+                cq: *Self,
+
+                pub fn call(p: @This()) CqPollError!?void {
+                    const slot = &p.cq.ring.constSlice()[p.cq.head];
+                    if (slot.phase() != (p.cq.expected_phase != 0)) return null;
+                    return {};
+                }
+            };
+            _ = try stdx.io.poll.until(
+                &self.clock,
+                deadline,
+                backoff,
+                FirstPredicate{ .cq = self },
+            );
+        }
     };
 }
 
@@ -313,12 +317,12 @@ pub fn CompletionQueue(comptime Backend: type) type {
 /// drained CID. Caller serializes all methods per pair.
 pub fn Pair(comptime Backend: type) type {
     return struct {
+        _sq: SubmissionQueue,
+        _cq: Cq,
+
         const Self = @This();
 
         pub const Cq = CompletionQueue(Backend);
-
-        _sq: SubmissionQueue,
-        _cq: Cq,
 
         pub fn init(submission: SubmissionQueue, completion: Cq) InitError!Self {
             if (submission.qid.raw() != completion.qid.raw()) return error.PairMismatch;
@@ -335,48 +339,50 @@ pub fn Pair(comptime Backend: type) type {
             return &self._cq;
         }
 
-        /// Drain contiguous matched CQEs, validating per-completion
-        /// SQID/SQHD/CID and releasing every drained CID. Rings the CQ head
-        /// doorbell exactly once per internal chunk.
-        ///
-        /// On per-completion validation error, `sq.head`, `sq.cids`, and `out`
-        /// remain untouched. Note that `cq.head` and `cq.expected_phase` DO
-        /// advance — the CQ doorbell has already rung inside `_cq.poll`.
+        /// Consumes already-posted CQEs without allocating or waiting, validates
+        /// each complete chunk, and retires its CIDs. On validation error, CQ
+        /// state has advanced, submission-side state for the failing chunk is
+        /// unchanged, and the caller must not consume `out`.
+        pub fn drain(self: *Self, out: []Completion) DrainError!usize {
+            const chunk_max: usize = 64;
+            var written: usize = 0;
+            while (written < out.len) {
+                var chunk: [chunk_max]Completion = undefined;
+                const room = @min(out.len - written, chunk_max);
+                const n = try self._cq.drain(chunk[0..room]);
+                if (n == 0) break;
+
+                for (chunk[0..n], 0..) |c, i| {
+                    if (c.sqid.raw() != self._sq.qid.raw()) return error.SqidMismatch;
+                    if (c.sqhd >= self._sq.capacity) return error.InvalidSubmissionQueueHead;
+                    if (!self._sq.cids.isAllocated(c.cid.tag)) return error.UnknownCommandId;
+
+                    // The 64-entry bound makes a prefix scan cheaper than a second CID bitmap.
+                    for (chunk[0..i]) |prior| {
+                        if (prior.cid.raw() == c.cid.raw()) return error.UnknownCommandId;
+                    }
+                }
+
+                for (chunk[0..n]) |c| {
+                    self._sq.head = c.sqhd;
+                    self._sq.cids.freeOne(c.cid.tag) catch unreachable;
+                    out[written] = c;
+                    written += 1;
+                }
+            }
+            return written;
+        }
+
+        /// Waits for the first posted CQE, then drains without another wait.
         pub fn poll(
             self: *Self,
             out: []Completion,
             deadline: stdx.time.Deadline,
             backoff: *stdx.time.Backoff,
         ) PollError!usize {
-            const chunk_max: usize = 64;
-            var written: usize = 0;
-            while (written < out.len) {
-                var chunk: [chunk_max]Completion = undefined;
-                const room = @min(out.len - written, chunk_max);
-                const n = self._cq.poll(chunk[0..room], deadline, backoff) catch |err| switch (err) {
-                    error.Timeout => if (written == 0) return err else break,
-                    else => |e| return e,
-                };
-
-                for (chunk[0..n]) |c| {
-                    if (c.sqid.raw() != self._sq.qid.raw()) return error.SqidMismatch;
-                    if (c.sqhd >= self._sq.capacity) return error.InvalidSubmissionQueueHead;
-                    if (!self._sq.cids.isAllocated(c.cid.tag)) return error.UnknownCommandId;
-                }
-
-                // All validated. `freeOne catch unreachable` is safe:
-                // `isAllocated(c.cid)` returned true above and per-pair
-                // caller-serialization means no other path frees these CIDs.
-                for (chunk[0..n]) |c| {
-                    self._sq.head = c.sqhd; // Monotonic in NVMe wire order; last chunk entry wins.
-                    self._sq.cids.freeOne(c.cid.tag) catch unreachable;
-                    out[written] = c;
-                    written += 1;
-                }
-
-                if (n < room) break; // CQ drained.
-            }
-            return written;
+            if (out.len == 0) return 0;
+            try self._cq.waitForFirst(deadline, backoff);
+            return self.drain(out);
         }
 
         pub fn pollOne(
@@ -396,10 +402,10 @@ pub fn Pair(comptime Backend: type) type {
 /// slot count must equal `capacity`.
 pub fn RequestTable(comptime RequestState: type) type {
     return struct {
-        const Self = @This();
-
         slots: []RequestState,
         capacity: u16,
+
+        const Self = @This();
 
         pub fn wrap(slots: []RequestState, capacity: u16) InitError!Self {
             if (slots.len != capacity) return error.CapacityMismatch;

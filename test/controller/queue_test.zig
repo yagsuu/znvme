@@ -616,6 +616,58 @@ test "unit: completion queue init rejects mismatched ring length" {
     }));
 }
 
+test "unit: completion queue drain with empty out changes no state or doorbell" {
+    // Preserve clock and doorbell sentinels to prove an empty output slice exits before queue access.
+    var cq_backing: [4]Cqe = @splat(Cqe{});
+    var bar: [0x2000]u8 align(@alignOf(u64)) = @splat(0);
+    const db = try makeDoorbells(&bar);
+    const cq_db = db.completionQueue(Qid.admin);
+
+    const ring = try makeCqBuffer(cq_backing[0..]);
+    var cq = try makeCompletionQueue(Qid.admin, 4, ring, cq_db, .{ .ticks_ns = 17 });
+    cq.head = 1;
+    std.mem.writeInt(u32, bar[cq_db.offset()..][0..4], 0xCAFE_BABE, .little);
+
+    var out: [0]queue.Completion = undefined;
+    const n = try cq.drain(out[0..]);
+
+    try testing.expectEqual(@as(usize, 0), n);
+    try testing.expectEqual(@as(u16, 1), cq.head);
+    try testing.expectEqual(@as(u1, 1), cq.expected_phase);
+    try testing.expectEqual(@as(u64, 17), cq.clock.backend.ticks_ns);
+    try testing.expectEqual(@as(u32, 0xCAFE_BABE), readCqDoorbell(&bar, cq_db));
+}
+
+test "unit: completion queue drain returns zero on phase mismatch without side effects" {
+    // Leave the CQE phase stale and preserve sentinels to prove a mismatch has no observable side effects.
+    var cq_backing: [4]Cqe = @splat(Cqe{});
+    var bar: [0x2000]u8 align(@alignOf(u64)) = @splat(0);
+    const db = try makeDoorbells(&bar);
+    const cq_db = db.completionQueue(Qid.admin);
+
+    const ring = try makeCqBuffer(cq_backing[0..]);
+    var cq = try makeCompletionQueue(Qid.admin, 4, ring, cq_db, .{ .ticks_ns = 23 });
+    std.mem.writeInt(u32, bar[cq_db.offset()..][0..4], 0xABCD_EF01, .little);
+
+    var out = [_]queue.Completion{.{
+        .cid = Cid.from(0x1234),
+        .sqid = Qid.from(7),
+        .sqhd = 3,
+        .status = CompletionStatus.success(false),
+        .dw0 = 0x1122_3344,
+        .dw1 = 0x5566_7788,
+    }};
+    const n = try cq.drain(out[0..]);
+
+    try testing.expectEqual(@as(usize, 0), n);
+    try testing.expectEqual(@as(u16, 0), cq.head);
+    try testing.expectEqual(@as(u1, 1), cq.expected_phase);
+    try testing.expectEqual(@as(u64, 23), cq.clock.backend.ticks_ns);
+    try testing.expectEqual(@as(u16, 0x1234), out[0].cid.raw());
+    try testing.expectEqual(@as(u32, 0x1122_3344), out[0].dw0);
+    try testing.expectEqual(@as(u32, 0xABCD_EF01), readCqDoorbell(&bar, cq_db));
+}
+
 test "unit: completion queue pollOne returns Timeout when phase never matches and Deadline expires" {
     // Goal: ring[0] carries phase=0 while expected_phase=1; the spin-only
     // policy routes the first backoff step to `.timeout`; pollOne surfaces
@@ -680,10 +732,8 @@ test "unit: completion queue pollOne consumes a slot whose phase matches even af
     try testing.expectEqual(@as(u16, 0x11), c.cid.raw());
 }
 
-test "unit: completion queue pollOne flips expected phase on wrap" {
-    // Goal: fill capacity=4 phase-1 completions and drain them in one poll
-    // into an 8-slot out buffer; the drain hits the wrap-break and
-    // expected_phase toggles from 1 to 0 (head returns to 0).
+test "unit: completion queue drain flips expected phase on a full wrap" {
+    // Fill one complete phase and use excess output capacity to verify that drain stops and flips at wrap.
     var cq_backing: [4]Cqe = @splat(Cqe{});
     var bar: [0x2000]u8 align(@alignOf(u64)) = @splat(0);
     const db = try makeDoorbells(&bar);
@@ -698,9 +748,7 @@ test "unit: completion queue pollOne flips expected phase on wrap" {
     }
 
     var out_buf: [8]queue.Completion = undefined;
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl = try stdx.time.Deadline.now(&cq.clock, stdx.time.Duration.zero);
-    const n = try cq.poll(out_buf[0..], dl, &backoff);
+    const n = try cq.drain(out_buf[0..]);
 
     try testing.expectEqual(@as(usize, 4), n);
     try testing.expectEqual(@as(u16, 0), cq.head);
@@ -828,9 +876,8 @@ test "unit: completion queue pollOne DMA acquire covers CQE fields only" {
     try testing.expectEqual(@as(u16, 1), c.sqhd);
 }
 
-test "unit: completion queue poll drains N contiguous matched CQEs with one CQ head doorbell ring" {
-    // Goal: 5 phase-1 CQEs at head..head+5 in a cap-8 ring; poll(out[0..8])
-    // returns 5, head=5, doorbell reads 5, each out slot decodes uniquely.
+test "unit: completion queue drain consumes contiguous matched CQEs with one doorbell" {
+    // Stamp five distinct CQEs and verify one drain decodes them in order with one head update.
     var cq_backing: [8]Cqe = @splat(Cqe{});
     var bar: [0x2000]u8 align(@alignOf(u64)) = @splat(0);
     const db = try makeDoorbells(&bar);
@@ -845,9 +892,7 @@ test "unit: completion queue poll drains N contiguous matched CQEs with one CQ h
     }
 
     var out_buf: [8]queue.Completion = undefined;
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl = try stdx.time.Deadline.now(&cq.clock, stdx.time.Duration.zero);
-    const n = try cq.poll(out_buf[0..], dl, &backoff);
+    const n = try cq.drain(out_buf[0..]);
 
     try testing.expectEqual(@as(usize, 5), n);
     try testing.expectEqual(@as(u16, 5), cq.head);
@@ -860,9 +905,8 @@ test "unit: completion queue poll drains N contiguous matched CQEs with one CQ h
     }
 }
 
-test "unit: completion queue poll stops at first phase mismatch even when out has room" {
-    // Goal: 3 phase-1 CQEs followed by phase-0 slots; poll(out[0..8]) returns
-    // 3 and rings the doorbell once at head+3.
+test "unit: completion queue drain stops at first phase mismatch" {
+    // Stamp a matching prefix only and verify the first stale phase terminates the drain.
     var cq_backing: [8]Cqe = @splat(Cqe{});
     var bar: [0x2000]u8 align(@alignOf(u64)) = @splat(0);
     const db = try makeDoorbells(&bar);
@@ -877,18 +921,14 @@ test "unit: completion queue poll stops at first phase mismatch even when out ha
     }
 
     var out_buf: [8]queue.Completion = undefined;
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl = try stdx.time.Deadline.now(&cq.clock, stdx.time.Duration.zero);
-    const n = try cq.poll(out_buf[0..], dl, &backoff);
+    const n = try cq.drain(out_buf[0..]);
     try testing.expectEqual(@as(usize, 3), n);
     try testing.expectEqual(@as(u16, 3), cq.head);
     try testing.expectEqual(@as(u32, 3), readCqDoorbell(&bar, cq_db));
 }
 
-test "unit: completion queue poll stops when out fills; remaining CQEs stay for next call" {
-    // Goal: 8 phase-1 CQEs in a cap-16 ring; poll(out[0..3]) returns 3, head=3;
-    // second poll(out[0..8]) returns 5, head=8. The second call's out[0] is
-    // the 4th CQE (CID 4), proving no re-observation.
+test "unit: completion queue drain stops when out fills and resumes on the next call" {
+    // Stamp eight CQEs, drain through a short slice, then verify the next call resumes at the fourth CQE.
     var cq_backing: [16]Cqe = @splat(Cqe{});
     var bar: [0x2000]u8 align(@alignOf(u64)) = @splat(0);
     const db = try makeDoorbells(&bar);
@@ -903,27 +943,20 @@ test "unit: completion queue poll stops when out fills; remaining CQEs stay for 
     }
 
     var out_buf: [8]queue.Completion = undefined;
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl1 = try stdx.time.Deadline.now(&cq.clock, stdx.time.Duration.zero);
-    const n1 = try cq.poll(out_buf[0..3], dl1, &backoff);
+    const n1 = try cq.drain(out_buf[0..3]);
     try testing.expectEqual(@as(usize, 3), n1);
     try testing.expectEqual(@as(u16, 3), cq.head);
     try testing.expectEqual(@as(u32, 3), readCqDoorbell(&bar, cq_db));
 
-    backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl2 = try stdx.time.Deadline.now(&cq.clock, stdx.time.Duration.zero);
-    const n2 = try cq.poll(out_buf[0..8], dl2, &backoff);
+    const n2 = try cq.drain(out_buf[0..8]);
     try testing.expectEqual(@as(usize, 5), n2);
     try testing.expectEqual(@as(u16, 8), cq.head);
     try testing.expectEqual(@as(u32, 8), readCqDoorbell(&bar, cq_db));
     try testing.expectEqual(@as(u16, 4), out_buf[0].cid.raw());
 }
 
-test "unit: completion queue poll issues DMA acquire before each drained CQE field decode" {
-    // Goal: behavioral proxy — every drained CQE's fields decode to the exact
-    // sentinels stamped in memory. If any per-CQE acquire were missing and
-    // decode reordered against the phase load, this correspondence would break
-    // on a weaker-ordered target (test-strategy.md §"Barrier substrate").
+test "unit: completion queue drain issues DMA acquire before each CQE field decode" {
+    // Stamp distinct CQE fields so each decoded entry proves acquire ordering follows its phase match.
     var cq_backing: [8]Cqe = @splat(Cqe{});
     var bar: [0x2000]u8 align(@alignOf(u64)) = @splat(0);
     const db = try makeDoorbells(&bar);
@@ -944,9 +977,7 @@ test "unit: completion queue poll issues DMA acquire before each drained CQE fie
     }
 
     var out_buf: [8]queue.Completion = undefined;
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl = try stdx.time.Deadline.now(&cq.clock, stdx.time.Duration.zero);
-    const n = try cq.poll(out_buf[0..], dl, &backoff);
+    const n = try cq.drain(out_buf[0..]);
     try testing.expectEqual(@as(usize, 5), n);
 
     var k: u16 = 0;
@@ -957,10 +988,8 @@ test "unit: completion queue poll issues DMA acquire before each drained CQE fie
     }
 }
 
-test "unit: completion queue poll stops at wrap without spanning it" {
-    // Goal: head=2 in cap-5 ring, 3 phase-1 pre-wrap and 2 phase-0 post-wrap.
-    // First poll returns 3, head wraps to 0, expected_phase flips to 0.
-    // Second poll drains the 2 phase-0 slots at ring[0..2] and returns 2.
+test "unit: completion queue drain stops at wrap without spanning it" {
+    // Seed both sides of a wrap with opposite phases and verify each drain stays on one side.
     var cq_backing: [5]Cqe = @splat(Cqe{});
     var bar: [0x2000]u8 align(@alignOf(u64)) = @splat(0);
     const db = try makeDoorbells(&bar);
@@ -968,8 +997,6 @@ test "unit: completion queue poll stops at wrap without spanning it" {
 
     const ring = try makeCqBuffer(cq_backing[0..]);
     var cq = try makeCompletionQueue(Qid.admin, 5, ring, cq_db, .{});
-
-    // Seed the CQ near the wrap. Only two fields participate in wrap accounting.
     cq.head = 2;
     cq.expected_phase = 1;
 
@@ -980,27 +1007,21 @@ test "unit: completion queue poll stops at wrap without spanning it" {
     stampCompletion(cq_backing[0..], 1, 0xB1, 0, 1, statusWithPhase(0));
 
     var out_buf: [8]queue.Completion = undefined;
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl1 = try stdx.time.Deadline.now(&cq.clock, stdx.time.Duration.zero);
-    const n1 = try cq.poll(out_buf[0..], dl1, &backoff);
+    const n1 = try cq.drain(out_buf[0..]);
     try testing.expectEqual(@as(usize, 3), n1);
     try testing.expectEqual(@as(u16, 0), cq.head);
     try testing.expectEqual(@as(u1, 0), cq.expected_phase);
     try testing.expectEqual(@as(u32, 0), readCqDoorbell(&bar, cq_db));
 
-    backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl2 = try stdx.time.Deadline.now(&cq.clock, stdx.time.Duration.zero);
-    const n2 = try cq.poll(out_buf[0..], dl2, &backoff);
+    const n2 = try cq.drain(out_buf[0..]);
     try testing.expectEqual(@as(usize, 2), n2);
     try testing.expectEqual(@as(u16, 2), cq.head);
     try testing.expectEqual(@as(u1, 0), cq.expected_phase);
     try testing.expectEqual(@as(u32, 2), readCqDoorbell(&bar, cq_db));
 }
 
-test "unit: completion queue poll retry after CQ head doorbell failure re-observes same completions" {
-    // Goal: build the CQ with a doorbell over a 0x1000-byte BAR (setHead fails
-    // OutOfBounds). First poll returns OutOfBounds; head/phase unchanged. Swap
-    // `cq.db` to a valid doorbell and retry: same completions decode.
+test "unit: completion queue drain retry after CQ head doorbell failure re-observes completions" {
+    // Fail the first head-doorbell write, replace the doorbell, and verify retry observes the same CQE.
     var cq_backing: [4]Cqe = @splat(Cqe{});
     var short_bar: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
     const short_regs = try registers.ControllerRegisters.at(&short_bar);
@@ -1012,9 +1033,7 @@ test "unit: completion queue poll retry after CQ head doorbell failure re-observ
     stampCompletion(cq_backing[0..], 0, 0x55, 0, 0, statusWithPhase(1));
 
     var out_buf: [4]queue.Completion = undefined;
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl1 = try stdx.time.Deadline.now(&cq.clock, stdx.time.Duration.zero);
-    try testing.expectError(error.OutOfBounds, cq.poll(out_buf[0..], dl1, &backoff));
+    try testing.expectError(error.OutOfBounds, cq.drain(out_buf[0..]));
     try testing.expectEqual(@as(u16, 0), cq.head);
     try testing.expectEqual(@as(u1, 1), cq.expected_phase);
 
@@ -1022,9 +1041,7 @@ test "unit: completion queue poll retry after CQ head doorbell failure re-observ
     const full_db = try makeDoorbells(&full_bar);
     cq.db = full_db.completionQueue(Qid.admin);
 
-    backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl2 = try stdx.time.Deadline.now(&cq.clock, stdx.time.Duration.zero);
-    const n = try cq.poll(out_buf[0..], dl2, &backoff);
+    const n = try cq.drain(out_buf[0..]);
     try testing.expectEqual(@as(usize, 1), n);
     try testing.expectEqual(@as(u16, 0x55), out_buf[0].cid.raw());
     try testing.expectEqual(@as(u16, 1), cq.head);
@@ -1178,74 +1195,74 @@ test "unit: pair sq and cq return the composed pointers" {
     try testing.expectEqual(@as(u16, 4), pair.cq().capacity);
 }
 
-test "unit: pair pollOne returns SqidMismatch for CQE SQID mismatch without advancing state" {
-    // Goal: reserve+stage+flush one command on Qid.admin, fabricate a CQE with
-    // sqid=1 (mismatch). Per docs/specs/controller/queue.md §"znvme behavior —
-    // Completion", Pair.poll advances cq.head via _cq.poll BEFORE Pair-side
-    // validation, so cq.head IS advanced; but sq.head and sq.cids stay
-    // unchanged.
+test "unit: pair drain returns zero on an empty CQ without changing state" {
+    // Leave the CQ stale and compare queue and clock state before and after the non-waiting drain.
+    var kit = PairKit{};
+    var pair = try kit.buildPair(Qid.admin, 4);
+    const ticks_before = pair.cq().clock.backend.ticks_ns;
+
+    var out: [4]queue.Completion = undefined;
+    const n = try pair.drain(out[0..]);
+
+    try testing.expectEqual(@as(usize, 0), n);
+    try testing.expectEqual(@as(u16, 0), pair.sq().head);
+    try testing.expectEqual(@as(u16, 0), pair.cq().head);
+    try testing.expectEqual(@as(usize, 0), pair.sq().outstanding());
+    try testing.expectEqual(ticks_before, pair.cq().clock.backend.ticks_ns);
+}
+
+test "unit: pair drain returns SqidMismatch after CQ advance without changing SQ state" {
+    // Post a wrong-SQID CQE and verify CQ advancement occurs before chunk validation rejects it.
     var kit = PairKit{};
     var pair = try kit.buildPair(Qid.admin, 4);
 
     const reservation = try pair.sq().reserveSlot();
     _ = pair.sq().stage(reservation);
     try pair.sq().flush();
-
     stampCompletion(kit.cq_ring[0..], 0, reservation.command_id.raw(), 1, 0, statusWithPhase(1));
 
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl = try stdx.time.Deadline.now(&pair.cq().clock, stdx.time.Duration.zero);
-    try testing.expectError(error.SqidMismatch, pair.pollOne(dl, &backoff));
+    var out: [1]queue.Completion = undefined;
+    try testing.expectError(error.SqidMismatch, pair.drain(out[0..]));
 
     try testing.expectEqual(@as(u16, 0), pair.sq().head);
     try testing.expectEqual(@as(usize, 1), pair.sq().outstanding());
     try testing.expectEqual(@as(u16, 1), pair.cq().head);
 }
 
-test "unit: pair pollOne returns InvalidSubmissionQueueHead for CQE SQHD outside capacity without advancing state" {
-    // Goal: fabricate a CQE with sqhd == capacity. Pair validation fires
-    // InvalidSubmissionQueueHead; sq state unchanged, cq.head advanced.
+test "unit: pair drain returns InvalidSubmissionQueueHead after CQ advance without changing SQ state" {
+    // Post an out-of-range SQHD and verify rejection preserves submission-side state after CQ advancement.
     var kit = PairKit{};
     var pair = try kit.buildPair(Qid.admin, 4);
 
     const reservation = try pair.sq().reserveSlot();
     _ = pair.sq().stage(reservation);
     try pair.sq().flush();
-
     stampCompletion(kit.cq_ring[0..], 0, reservation.command_id.raw(), 0, 4, statusWithPhase(1));
 
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl = try stdx.time.Deadline.now(&pair.cq().clock, stdx.time.Duration.zero);
-    try testing.expectError(error.InvalidSubmissionQueueHead, pair.pollOne(dl, &backoff));
+    var out: [1]queue.Completion = undefined;
+    try testing.expectError(error.InvalidSubmissionQueueHead, pair.drain(out[0..]));
 
     try testing.expectEqual(@as(u16, 0), pair.sq().head);
     try testing.expectEqual(@as(usize, 1), pair.sq().outstanding());
     try testing.expectEqual(@as(u16, 1), pair.cq().head);
 }
 
-test "unit: pair pollOne returns UnknownCommandId for unallocated CQE CID without advancing state" {
-    // Goal: fabricate a phase-1 CQE with CID=3, which was never allocated in
-    // sq.cids (empty allocator). Pair validation fires UnknownCommandId;
-    // sq state unchanged, cq.head advanced.
+test "unit: pair drain returns UnknownCommandId after CQ advance without changing SQ state" {
+    // Post an unallocated CID and verify rejection preserves the empty submission-side allocator.
     var kit = PairKit{};
     var pair = try kit.buildPair(Qid.admin, 4);
-
     stampCompletion(kit.cq_ring[0..], 0, 0x3, 0, 0, statusWithPhase(1));
 
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl = try stdx.time.Deadline.now(&pair.cq().clock, stdx.time.Duration.zero);
-    try testing.expectError(error.UnknownCommandId, pair.pollOne(dl, &backoff));
+    var out: [1]queue.Completion = undefined;
+    try testing.expectError(error.UnknownCommandId, pair.drain(out[0..]));
 
     try testing.expectEqual(@as(u16, 0), pair.sq().head);
     try testing.expectEqual(@as(usize, 0), pair.sq().outstanding());
     try testing.expectEqual(@as(u16, 1), pair.cq().head);
 }
 
-test "unit: pair poll returns SqidMismatch mid-chunk without advancing state" {
-    // Goal: 4 valid + 1 wrong-sqid CQE, all phase-1. Pair.poll drains the
-    // whole chunk via _cq.poll (cq.head advances) then validation fires at
-    // the 5th entry: sq.head unchanged, outstanding unchanged, out untouched
-    // (sentinel-filled with 0xFF, verified byte-by-byte).
+test "unit: pair drain returns SqidMismatch mid-chunk without changing SQ state or output" {
+    // Place a wrong SQID after valid entries to verify complete-chunk validation prevents partial SQ mutation.
     var kit = PairKit{};
     var pair = try kit.buildPair(Qid.admin, 8);
 
@@ -1267,19 +1284,15 @@ test "unit: pair poll returns SqidMismatch mid-chunk without advancing state" {
 
     var out_buf: [8]queue.Completion = undefined;
     @memset(std.mem.asBytes(&out_buf), 0xFF);
-
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl = try stdx.time.Deadline.now(&pair.cq().clock, stdx.time.Duration.zero);
-    try testing.expectError(error.SqidMismatch, pair.poll(out_buf[0..], dl, &backoff));
+    try testing.expectError(error.SqidMismatch, pair.drain(out_buf[0..]));
 
     try testing.expectEqual(@as(u16, 0), pair.sq().head);
     try testing.expectEqual(@as(usize, 5), pair.sq().outstanding());
     for (std.mem.asBytes(&out_buf)) |b| try testing.expectEqual(@as(u8, 0xFF), b);
 }
 
-test "unit: pair poll returns InvalidSubmissionQueueHead mid-chunk without advancing state" {
-    // Goal: 3 valid + 1 sqhd=capacity CQE. Validation aborts at index 3; sq
-    // state unchanged; out sentinel untouched.
+test "unit: pair drain returns InvalidSubmissionQueueHead mid-chunk without changing SQ state or output" {
+    // Place an invalid SQHD after valid entries to verify complete-chunk validation preserves output.
     var kit = PairKit{};
     var pair = try kit.buildPair(Qid.admin, 8);
 
@@ -1301,19 +1314,15 @@ test "unit: pair poll returns InvalidSubmissionQueueHead mid-chunk without advan
 
     var out_buf: [8]queue.Completion = undefined;
     @memset(std.mem.asBytes(&out_buf), 0xFF);
-
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl = try stdx.time.Deadline.now(&pair.cq().clock, stdx.time.Duration.zero);
-    try testing.expectError(error.InvalidSubmissionQueueHead, pair.poll(out_buf[0..], dl, &backoff));
+    try testing.expectError(error.InvalidSubmissionQueueHead, pair.drain(out_buf[0..]));
 
     try testing.expectEqual(@as(u16, 0), pair.sq().head);
     try testing.expectEqual(@as(usize, 4), pair.sq().outstanding());
     for (std.mem.asBytes(&out_buf)) |b| try testing.expectEqual(@as(u8, 0xFF), b);
 }
 
-test "unit: pair poll returns UnknownCommandId mid-chunk without advancing state" {
-    // Goal: 2 valid + 1 unknown-CID CQE. Validation aborts at index 2; sq state
-    // unchanged (cids still holds the two originals); out sentinel untouched.
+test "unit: pair drain returns UnknownCommandId mid-chunk without changing SQ state or output" {
+    // Place an unknown CID after valid entries to verify complete-chunk validation preserves allocated CIDs.
     var kit = PairKit{};
     var pair = try kit.buildPair(Qid.admin, 8);
 
@@ -1327,25 +1336,19 @@ test "unit: pair poll returns UnknownCommandId mid-chunk without advancing state
 
     stampCompletion(kit.cq_ring[0..], 0, reservations[0].command_id.raw(), 0, 0, statusWithPhase(1));
     stampCompletion(kit.cq_ring[0..], 1, reservations[1].command_id.raw(), 0, 1, statusWithPhase(1));
-    // CID 7 was never allocated (only 0 and 1 were).
     stampCompletion(kit.cq_ring[0..], 2, 0x7, 0, 2, statusWithPhase(1));
 
     var out_buf: [8]queue.Completion = undefined;
     @memset(std.mem.asBytes(&out_buf), 0xFF);
-
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl = try stdx.time.Deadline.now(&pair.cq().clock, stdx.time.Duration.zero);
-    try testing.expectError(error.UnknownCommandId, pair.poll(out_buf[0..], dl, &backoff));
+    try testing.expectError(error.UnknownCommandId, pair.drain(out_buf[0..]));
 
     try testing.expectEqual(@as(u16, 0), pair.sq().head);
     try testing.expectEqual(@as(usize, 2), pair.sq().outstanding());
     for (std.mem.asBytes(&out_buf)) |b| try testing.expectEqual(@as(u8, 0xFF), b);
 }
 
-test "unit: pair poll drains N completions with one CQ head doorbell ring and releases every CID" {
-    // Goal: reserveSlot+stage 5 commands, flush; fabricate 5 phase-1 CQEs;
-    // poll into an 8-slot buffer returns 5. sq.outstanding()==0 (every CID
-    // released), sq.head==4 (last sqhd), cq head doorbell rung once at 5.
+test "unit: pair drain validates completions and releases every CID" {
+    // Post five valid CQEs and verify one drain updates SQHD and retires every CID in wire order.
     var kit = PairKit{};
     var pair = try kit.buildPair(Qid.admin, 8);
 
@@ -1363,9 +1366,7 @@ test "unit: pair poll drains N completions with one CQ head doorbell ring and re
     }
 
     var out_buf: [8]queue.Completion = undefined;
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl = try stdx.time.Deadline.now(&pair.cq().clock, stdx.time.Duration.zero);
-    const n = try pair.poll(out_buf[0..], dl, &backoff);
+    const n = try pair.drain(out_buf[0..]);
 
     try testing.expectEqual(@as(usize, 5), n);
     try testing.expectEqual(@as(usize, 0), pair.sq().outstanding());
@@ -1373,17 +1374,14 @@ test "unit: pair poll drains N completions with one CQ head doorbell ring and re
     try testing.expectEqual(@as(u32, 5), readCqDoorbell(&kit.bar, pair.cq().doorbell()));
 }
 
-test "unit: pair poll retry after CQ head doorbell failure re-observes same completions" {
-    // Goal: swap the CQ's doorbell to one whose BAR window is too short so
-    // setHead surfaces OutOfBounds through _cq.poll. sq state stays put; retry
-    // with a valid doorbell drains the same completions.
+test "unit: pair drain retry after CQ head doorbell failure re-observes completions" {
+    // Fail the CQ head write, replace the doorbell, and verify pair retry retires the original CID.
     var kit = PairKit{};
     var pair = try kit.buildPair(Qid.admin, 4);
 
     const reservation = try pair.sq().reserveSlot();
     _ = pair.sq().stage(reservation);
     try pair.sq().flush();
-
     stampCompletion(kit.cq_ring[0..], 0, reservation.command_id.raw(), 0, 0, statusWithPhase(1));
 
     var short_bar: [0x1000]u8 align(@alignOf(u64)) = @splat(0);
@@ -1392,9 +1390,7 @@ test "unit: pair poll retry after CQ head doorbell failure re-observes same comp
     pair.cq().db = short_db.completionQueue(Qid.admin);
 
     var out_buf: [4]queue.Completion = undefined;
-    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl1 = try stdx.time.Deadline.now(&pair.cq().clock, stdx.time.Duration.zero);
-    try testing.expectError(error.OutOfBounds, pair.poll(out_buf[0..], dl1, &backoff));
+    try testing.expectError(error.OutOfBounds, pair.drain(out_buf[0..]));
     try testing.expectEqual(@as(u16, 0), pair.cq().head);
     try testing.expectEqual(@as(u16, 0), pair.sq().head);
     try testing.expectEqual(@as(usize, 1), pair.sq().outstanding());
@@ -1403,12 +1399,31 @@ test "unit: pair poll retry after CQ head doorbell failure re-observes same comp
     const full_db = try makeDoorbells(&full_bar);
     pair.cq().db = full_db.completionQueue(Qid.admin);
 
-    backoff = stdx.time.Backoff.init(testBackoffPolicy());
-    const dl2 = try stdx.time.Deadline.now(&pair.cq().clock, stdx.time.Duration.zero);
-    const n = try pair.poll(out_buf[0..], dl2, &backoff);
+    const n = try pair.drain(out_buf[0..]);
     try testing.expectEqual(@as(usize, 1), n);
     try testing.expectEqual(reservation.command_id.raw(), out_buf[0].cid.raw());
     try testing.expectEqual(@as(usize, 0), pair.sq().outstanding());
+}
+
+test "unit: pair drain rejects a duplicate CID before changing SQ state" {
+    // Post the same allocated CID twice and verify prefix validation rejects it before SQ mutation.
+    var kit = PairKit{};
+    var pair = try kit.buildPair(Qid.admin, 4);
+
+    const reservation = try pair.sq().reserveSlot();
+    _ = pair.sq().stage(reservation);
+    try pair.sq().flush();
+    stampCompletion(kit.cq_ring[0..], 0, reservation.command_id.raw(), 0, 1, statusWithPhase(1));
+    stampCompletion(kit.cq_ring[0..], 1, reservation.command_id.raw(), 0, 1, statusWithPhase(1));
+
+    var out_buf: [2]queue.Completion = undefined;
+    @memset(std.mem.asBytes(&out_buf), 0xFF);
+    try testing.expectError(error.UnknownCommandId, pair.drain(out_buf[0..]));
+
+    try testing.expectEqual(@as(u16, 2), pair.cq().head);
+    try testing.expectEqual(@as(u16, 0), pair.sq().head);
+    try testing.expectEqual(@as(usize, 1), pair.sq().outstanding());
+    for (std.mem.asBytes(&out_buf)) |b| try testing.expectEqual(@as(u8, 0xFF), b);
 }
 
 test "unit: pair pollOne returns completions in the order the device posts them not the order the caller submitted" {
@@ -1506,6 +1521,10 @@ test "roundtrip: pair poll across CQ wrap tracks SQ head from the last SQHD in t
     // Seed the CQ near the wrap so the drain hits the wrap-break.
     pair.cq().head = 2;
     pair.cq().expected_phase = 1;
+    // Slots before the synthetic head are stale entries from the current
+    // phase. After wrap, they must mismatch the new expected phase.
+    stampCompletion(kit.cq_ring[0..], 0, 0, 0, 0, statusWithPhase(1));
+    stampCompletion(kit.cq_ring[0..], 1, 0, 0, 0, statusWithPhase(1));
 
     stampCompletion(kit.cq_ring[0..], 2, reservations[0].command_id.raw(), 0, 0, statusWithPhase(1));
     stampCompletion(kit.cq_ring[0..], 3, reservations[1].command_id.raw(), 0, 1, statusWithPhase(1));
@@ -1551,6 +1570,50 @@ test "roundtrip: pair batched submit and drain rings one SQ doorbell and one CQ 
 
     try testing.expectEqual(@as(usize, 4), n);
     try testing.expectEqual(@as(u32, 4), readCqDoorbell(&kit.bar, pair.cq().doorbell()));
+    try testing.expectEqual(@as(usize, 0), pair.sq().outstanding());
+}
+
+test "unit: pair poll returns after exactly 64 completions without a second wait" {
+    // Post one full 64-entry chunk with an expired deadline to prove poll does not wait for entry 65.
+    const capacity: u16 = 65;
+    var sq_ring: [capacity]Sqe = @splat(Sqe{});
+    var cq_ring: [capacity]Cqe = @splat(Cqe{});
+    var cid_words: [2]CidAllocator.Word = @splat(0);
+    var bar: [0x2000]u8 align(@alignOf(u64)) = @splat(0);
+    const db = try makeDoorbells(&bar);
+
+    const sq = try makeSubmissionQueue(
+        Qid.admin,
+        capacity,
+        try makeSqBuffer(sq_ring[0..]),
+        cid_words[0..],
+        db.submissionQueue(Qid.admin),
+    );
+    const cq = try makeCompletionQueue(
+        Qid.admin,
+        capacity,
+        try makeCqBuffer(cq_ring[0..]),
+        db.completionQueue(Qid.admin),
+        .{},
+    );
+    var pair = try PairType.init(sq, cq);
+
+    var i: u16 = 0;
+    while (i < 64) : (i += 1) {
+        const reservation = try pair.sq().reserveSlot();
+        _ = pair.sq().stage(reservation);
+        stampCompletion(cq_ring[0..], i, reservation.command_id.raw(), 0, i + 1, statusWithPhase(1));
+    }
+    try pair.sq().flush();
+
+    var out_buf: [capacity]queue.Completion = undefined;
+    var backoff = stdx.time.Backoff.init(testBackoffPolicy());
+    const deadline = try stdx.time.Deadline.now(&pair.cq().clock, stdx.time.Duration.zero);
+    const n = try pair.poll(out_buf[0..], deadline, &backoff);
+
+    try testing.expectEqual(@as(usize, 64), n);
+    try testing.expectEqual(@as(u16, 64), pair.cq().head);
+    try testing.expectEqual(@as(u16, 64), pair.sq().head);
     try testing.expectEqual(@as(usize, 0), pair.sq().outstanding());
 }
 

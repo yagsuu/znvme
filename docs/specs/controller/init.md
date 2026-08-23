@@ -2,150 +2,120 @@
 
 Status: Approved.
 
-`Controller(Backend)` drives the NVMe controller register state machine — the `CC.EN` ↔ `CSTS.RDY` handshake, reset, and shutdown transitions — over a caller-supplied `stdx.time.Clock.Monotonic(Backend)`. It owns admin queue construction on successful enable: the caller passes admin queue storage in through `Config`, and after `enable` returns, `ctrl.admin.sq()` and `ctrl.admin.cq()` are ready to submit commands.
+`Controller(Backend)` validates caller-owned controller resources, drives NVMe reset, enable, ready, and shutdown transitions, and constructs the admin queue pair after a successful enable.
 
-`Controller(Backend)` is a semantic type per `docs/specs/architecture.md` §"Two type worlds". It composes register accessors, doorbells, and queue types but carries no ABI layout of its own.
+## What this spec is
 
-`Controller(Backend)` does not issue Identify, Set Features (Number of Queues), or Create I/O Queue commands. Those are caller-authored on top of `ctrl.admin` after `enable`; the concrete builders live in `docs/specs/commands/admin.md`.
+This specification owns:
 
-## Owned scope
+- `State`, `Error`, and `default_backoff_policy`;
+- `Controller(Backend)`, `Controller.Config`, `Controller.Admin`, and `Controller.Admin.Storage`;
+- controller construction from registers, page size, clock, and admin queue storage;
+- `CC.EN` to `CSTS.RDY` reset and enable transitions;
+- `CC.SHN` to `CSTS.SHST` shutdown transitions;
+- fatal-controller handling during waits;
+- admin queue register programming and admin `Pair` construction;
+- admin queue access, non-waiting drain, and waiting single-completion delegation;
+- controller-transition waiting, ordering, errors, state, lifetime, and concurrency contracts.
 
-This spec owns:
+## What this spec is not
 
-- `Controller(Backend)`, the semantic type parameterized on the clock backend;
-- `Controller.Config`, the construction parameter struct;
-- `Controller.Admin` and `Controller.Admin.Storage`, the nested admin queue grouping;
-- `Controller.State`, the observed state enum;
-- the `reset` / `enable` / `shutdown` transitions;
-- the `pollReady` / `pollShutdown` polling primitives;
-- deadline-driven polling via `stdx.io.poll.until` composed with caller-owned `stdx.time.Backoff` state and `stdx.barrier.mmio.acquire()` after every `CSTS` load;
-- `CAP.TO`-derived `ready_timeout` with a caller override;
-- `CC.MPS` validation against `CAP.MPSMIN..CAP.MPSMAX`;
-- `CC.CSS = 0` (NVM Command Set), `CC.IOSQES = 6`, `CC.IOCQES = 4`, `CC.CRIME = 0` — Controller Ready With Media mode;
-- `AQA`, `ASQ`, `ACQ` register writes derived from `Config.admin`;
-- `CSTS.CFS` handling: every poll returns `error.ControllerFatal` immediately when observed;
-- construction of the admin `queue.Pair(Backend)` inside `enable`, exposed on `ctrl.admin`;
-- `Controller.doorbells()`, exposing the `core.doorbell.Doorbells` derived from `CAP.DSTRD` at `init`;
-- error taxonomy for the state machine.
+This specification does not own:
 
-## Deferred scope and non-goals
-
-This spec does not own:
-
-- Identify Controller, Identify Namespace, Set Features (Number of Queues), Create I/O SQ, Create I/O CQ — `docs/specs/commands/admin.md`;
-- I/O queue-pair construction — the caller builds them from `ctrl.doorbells()` and calls `queue.SubmissionQueue.init` / `queue.CompletionQueue(Backend).init` / `queue.Pair(Backend).init` directly;
-- namespace enumeration — `docs/specs/identify/namespace.md` (both CNS 00h `IdentifyNamespace` and CNS 02h `List`);
-- interrupt configuration, `INTMS`, `INTMC` — deferred by `docs/specs/project/scope.md`;
-- NVM Subsystem Reset (`NSSR.NSSRC`) — the offset is asserted in `docs/specs/core/registers.md`; behavior is out of first-slice scope;
-- Controller Memory Buffer, Persistent Memory Region, Boot Partition, Doorbell Buffer Config, NSSD — offsets asserted upstream, behavior deferred;
-- `CRTO` timeouts (`CRWMT`, `CRIMT`) and Controller Ready Independent of Media (`CRIME`) — `Controller.enable` selects Controller Ready With Media mode by clearing `CC.CRIME` (already the `Cc.nvmEnabled` default) and uses `CAP.TO` as the single timeout budget;
-- retry policy on `error.Timeout` or `error.ControllerFatal` — the caller decides;
-- wall-time or blocking waits — the polling loop is caller-driven via `stdx.io.poll.until` composed with caller-owned `stdx.time.Backoff` state; znvme selects no scheduler policy;
-- message-based transport controller initialization (NVMe over Fabrics) — memory-mapped only;
+- PCI discovery, BAR mapping, DMA allocation, or page-table configuration;
+- Identify, Set Features, Create I/O Queue, or NVM command encoding;
+- I/O queue creation policy or a queue-set aggregate;
+- MSI/MSI-X configuration, interrupt routing, handler registration, or event synchronization;
+- retry policy after timeout, fatal status, or command completion failure;
+- wall-clock or scheduler policy;
+- message-based NVMe transport initialization;
 - big-endian host or target compatibility.
 
-## `stdx` composition
+## Terminology
 
-Directly consumed:
+- **Controller state** is the last transition that znvme completed or the fatal state that a wait observed. It is not a live copy of `CSTS`.
+- **Admin readiness** means that `enable` completed and constructed the admin queue pair after the most recent successful `reset`.
+- **Transition wait** means a `stdx.io.poll.until` loop over `CSTS` with a caller-owned deadline and `Backoff`.
 
-- `stdx.time.Clock.Monotonic(Backend)` — comptime parameter driving deadline reads;
-- `stdx.time.Deadline` — deadline parameter on every waiting method;
-- `stdx.time.Duration` — `Config.ready_timeout_override` and the `CAP.TO`-derived `ready_timeout`;
-- `stdx.time.Backoff` — caller-owned backoff state threaded into every waiting method;
-- `stdx.io.poll.until` — the polling primitive composing `Deadline`, `Backoff`, and a per-method predicate;
-- `stdx.barrier.mmio.acquire()` — placed after every `CSTS` load, before the loaded value is decoded.
+## Public namespace
 
-Composed through znvme-owned types:
+The public module is `nvme.controller.init`, implemented by `src/controller/init.zig` and exported through `src/controller/root.zig` and `src/nvme.zig`.
 
-- `core.registers.ControllerRegisters` and its typed value wrappers (`Cap`, `Cc`, `Csts`, `Aqa`, `QueueBase`, `ShutdownNotification`, `ShutdownStatus`);
-- `core.doorbell.Doorbells` — derived once at `init` from `CAP.DSTRD` and exposed on `Controller.doorbells()`;
-- `core.prp.PageSize` — validated `CC.MPS` value on `Config.page_size`;
-- `commands.sqe.Sqe` and `commands.cqe.Cqe` — admin queue element types;
-- `controller.queue.SubmissionQueue`, `CompletionQueue(Backend)`, `Pair(Backend)`, `CidAllocator` — admin queue construction inside `enable`.
+This specification approves:
 
-## NVMe behavior
+- `State`;
+- `Error`;
+- `default_backoff_policy`;
+- `Controller(Backend)` and its public nested types and methods.
 
-`[nvme]` Memory-based Transport Controller Initialization, per NVMe Base Specification 2.0 §3.5:
+This specification does not approve a separate `disable` method, an interrupt provider, an I/O queue aggregate, or an owned storage allocator.
 
-1. `[nvme]` Wait for any previous reset to complete: `CSTS.RDY == 0`.
-2. `[nvme]` Configure the admin queue: write `AQA` (depths, zero-based), `ASQ` (admin SQ base address), and `ACQ` (admin CQ base address).
-3. `[nvme]` Configure the controller: set `CC.CSS` per `CAP.CSS`, `CC.AMS`, `CC.MPS` within `CAP.MPSMIN..CAP.MPSMAX`, `CC.IOSQES`, `CC.IOCQES`.
-4. `[nvme]` Enable the controller: write `CC.EN = 1`.
-5. `[nvme]` Wait for `CSTS.RDY == 1`. The worst-case wait is `CAP.TO * 500 ms`.
+## Cross-spec relationships
 
-`[nvme]` `CSTS.CFS = 1` signals Controller Fatal Status. Any wait aborts.
+This specification depends on:
 
-`[nvme]` Shutdown, per §3.6:
+- `docs/specs/core/registers.md` for `CAP`, `CC`, `CSTS`, `AQA`, `ASQ`, and `ACQ` access;
+- `docs/specs/core/doorbell.md` for the doorbell view derived from `CAP.DSTRD`;
+- `docs/specs/core/prp.md` for `PageSize`;
+- `docs/specs/controller/queue.md` for the admin `Pair`, completion drain, and polling contracts;
+- `docs/specs/project/scope.md` for allocation, interrupt, and target boundaries.
 
-1. `[nvme]` Stop submitting new commands and drain outstanding.
-2. `[nvme]` Write `CC.SHN = 01b` (normal) or `CC.SHN = 10b` (abrupt).
-3. `[nvme]` Wait for `CSTS.SHST == 10b` (complete).
+This specification composes with, but does not own:
 
-`[nvme]` "It is not recommended to disable the controller via the `CC.EN` field" for shutdown — `CC.EN = 0` is a Controller Reset, not a shutdown.
+- `stdx.time.Clock.Monotonic(Backend)`, `Deadline`, and `Backoff`;
+- `stdx.io.poll.until` for transition waits;
+- `stdx.barrier.mmio.acquire()` after each `CSTS` load;
+- caller-owned `stdx.dma.Buffer(Sqe)` and `stdx.dma.Buffer(Cqe)` storage.
 
-`[nvme]` Controller Reset, per §3.7: transition `CC.EN` from `1` to `0`. All I/O queues are deleted controller-side; outstanding admin commands are aborted. To continue, the host re-enables the controller and re-creates queues.
+## Data structures and representation
 
-`[nvme]` Admin submission and completion queue base addresses (`ASQ`, `ACQ`) shall be memory-page-aligned; bits `11:0` are reserved zero.
+`Controller(Backend)` and its nested types are semantic types with no ABI guarantee.
 
-## znvme behavior
+`State` has these values:
 
-`Controller(Backend).init(config)` performs no register I/O beyond a single `CAP` load. It validates the command-set advertisement, the requested page size against `CAP.MPSMIN..CAP.MPSMAX`, the admin queue buffer lengths, the first-slice equal-depth admin pair requirement, admin queue depth encoding, ASQ/ACQ base alignment, and admin CID bitmap capacity. It derives `Doorbells` from `CAP.DSTRD` and the `CAP.TO`-based `ready_timeout`. The initial `state` is `.unknown` until the first transition method sets it.
+- `.unknown`: `init` completed, but znvme has not completed a reset;
+- `.disabled`: reset completed with `CSTS.RDY == 0`;
+- `.ready`: enable completed with `CSTS.RDY == 1` and the admin pair exists;
+- `.shutdown_occurring`: `CC.SHN` was written and shutdown has not completed;
+- `.shutdown_complete`: `CSTS.SHST == .complete` was observed;
+- `.fatal`: a transition wait observed `CSTS.CFS == 1`.
 
-`Controller.reset(deadline)` clears `CC.EN` when the current `CC` load reports it set, then polls `CSTS.RDY == 0` or `error.ControllerFatal` or `error.Timeout`. Idempotent: calling `reset` on an already-disabled controller returns immediately after the poll confirms `CSTS.RDY == 0`. On success, `state` transitions to `.disabled` and `admin.ready()` returns `false`.
+`Controller.Config` borrows controller registers, admin SQ storage, admin CQ storage, and a CID bitmap. `Controller` stores these borrows and one clock backend value.
 
-`Controller.enable(deadline)` refuses to run unless `state == .disabled`, returning `error.NotDisabled` for `.unknown`, `.ready`, `.shutdown_occurring`, `.shutdown_complete`, or `.fatal`. A caller must drive `Controller.reset(deadline)` to success before the first `enable`; this proves the NVMe §3.5 precondition that `CSTS.RDY == 0` before `AQA`, `ASQ`, `ACQ`, and `CC.EN = 1` are written. On the accepted path, `enable` writes `AQA` (via `Aqa.fromDepths`), `ASQ` and `ACQ` (via `QueueBase.fromDmaAddr`), and `CC` (via `Cc.nvmEnabled(mps_shift)`), where `mps_shift = log2(page_size.bytes) - 12`. Then it polls `CSTS.RDY == 1` or `error.ControllerFatal` or `error.Timeout`. On success, `enable` composes the admin `queue.Pair(Backend)` from the stored `Config.admin` storage and transitions to `.ready`.
+`Controller.ready_timeout` is a caller-visible duration suggestion. If `ready_timeout_override` is null, `init` derives it from `CAP.TO * 500 ms`. A non-null override replaces the derived duration without clamping. Transition methods use only their explicit `deadline`; they do not read `ready_timeout` during a wait.
 
-`Controller.reset` is the sole tear-down path per NVMe §3.7 controller-reset semantics: writing `CC.EN = 0` deletes controller-side I/O queues and aborts outstanding admin commands. Callers must not rely on any completion posted before the transition. There is no separate `disable` method; NVMe does not distinguish "reset" from "disable via CC.EN" — both are the same Controller Reset transition, and znvme exposes the idempotent path only.
+`Controller.admin` stores the admin queue storage for the controller lifetime. It stores an admin pair only after successful enable.
 
-`Controller.shutdown(kind, deadline)` refuses to run when `state != .ready` with `error.NotReady`. `kind` must be `.normal` or `.abrupt`; `.none` and reserved values are programmer errors. `shutdown` reads the current `CC`, writes `cc.withShutdown(kind)`, transitions `state` to `.shutdown_occurring`, then polls `CSTS.SHST == .complete` or `error.ControllerFatal` or `error.Timeout`. On success, `state` transitions to `.shutdown_complete`; the admin pair is preserved (`admin.ready()` stays `true`) so callers can drain final completions before deconstructing.
+`[nvme]` Memory-based controller initialization requires the host to observe `CSTS.RDY == 0`, program `AQA`, `ASQ`, `ACQ`, and `CC`, set `CC.EN = 1`, and wait for `CSTS.RDY == 1`.
 
-Every polling method composes `stdx.io.poll.until` with a per-method predicate:
+`[nvme]` The maximum ready transition time is `CAP.TO * 500 ms`.
 
-- the predicate reads `self.registers.csts()` (a volatile MMIO load), calls `stdx.barrier.mmio.acquire()` immediately after, then dispatches on the observed value;
-- `csts.fatal()` — the predicate returns `error.ControllerFatal` and transitions `state` to `.fatal`; the error propagates through `poll.until` untranslated;
-- target predicate matched (`csts.ready() == target` or `csts.shst == .complete`) — the predicate returns the payload (`{}` for `void`-returning waits);
-- otherwise the predicate returns `null` and `poll.until` invokes `Backoff.next` for the caller-selected spin / yield / sleep dispatch;
-- `poll.until` returns `error.Timeout` (from `stdx.time.Deadline.TimeoutError`) when the `Backoff` reports `.timeout`.
+`[nvme]` `CSTS.CFS == 1` reports Controller Fatal Status.
 
-`Controller.ready_timeout` is derived at `init`. When `Config.ready_timeout_override` is `null`, `init` sets it to `stdx.time.Duration.fromMillis(cap.readyTimeoutUnits500ms() * 500)`. When `Config.ready_timeout_override` is non-null, `init` stores the caller value verbatim — the override is a replacement, not a bound. znvme performs no clamp; callers may shorten (typical: `CAP.TO` advertises up to 127.5 seconds while real controllers finish in milliseconds) or lengthen (e.g., a slow lab / debug bring-up).
+`[nvme]` Controller Reset changes `CC.EN` from `1` to `0`. It deletes controller-side I/O queues and aborts outstanding admin commands.
 
-`Controller.ready_timeout` is a public suggestion callers use to compose deadlines: `try stdx.time.Deadline.now(&ctrl.clock, ctrl.ready_timeout)`. Inside `reset(deadline, backoff)` and `enable(deadline, backoff)` the poll loop only inspects the caller-passed `deadline` — `Controller.ready_timeout` is not consulted at runtime once `init` finishes.
+`[nvme]` Normal or abrupt shutdown writes `CC.SHN` and waits for `CSTS.SHST == 10b`.
 
-`reset(deadline, backoff)` and `enable(deadline, backoff)` share the same `ready_timeout` suggestion. NVMe does not fix a numeric timeout for the `CC.EN` 1→0 transition, but the hardware handshake is symmetric; using one budget for both matches the Linux kernel and the majority of firmware NVMe implementations.
+`[nvme]` `ASQ` and `ACQ` base addresses are memory-page-aligned.
 
-`Controller.shutdown(kind, deadline, backoff)` takes an explicit `deadline` and `backoff` from the caller. NVMe references `RTD3 Entry Latency` from Identify Controller as the recommended wait, but znvme does not read Identify Controller inside this spec — the caller decides.
+## Global invariants
 
-znvme exposes a conservative `default_backoff_policy` that callers may copy or override. It has spin-only progression suitable for firmware boot (`spin_iterations = 128`, `yield_iterations = 0`, `yield = null`, `initial_wait = Duration.fromMicros(1)`, `max_wait = Duration.fromMillis(1)`, `growth_shift = 1`). Callers build a `Backoff` via `stdx.time.Backoff.init(default_backoff_policy)` and pass `&backoff` into every waiting method; they call `backoff.reset()` between phases when they reuse the same value.
+- Controller operations MUST NOT allocate memory.
+- Controller operations MUST NOT use hidden global state.
+- The caller MUST serialize all mutable operations on one `Controller` and its admin pair.
+- The caller MUST provide exclusive ownership of each `Backoff` during a transition or completion poll.
+- The caller MUST keep the MMIO mapping, admin queue storage, CID bitmap, and clock dependencies valid for the controller lifetime.
+- `admin.ready()` MUST equal whether the controller stores an admin pair.
+- A successful `reset` MUST clear the admin pair and set state to `.disabled`.
+- A successful `enable` MUST construct the admin pair before it sets state to `.ready`.
+- A successful `shutdown` MUST preserve the admin pair and set state to `.shutdown_complete`.
+- A transition wait that observes `CSTS.CFS` MUST set state to `.fatal` before it returns `error.ControllerFatal`.
+- Each `CSTS` load in a transition wait MUST be followed immediately by `stdx.barrier.mmio.acquire()` before the observed fields are evaluated.
+- Copying a controller and mutating both copies is prohibited. Moving the controller before use is permitted.
 
-`Controller.state` is the last transition znvme drove, not the current hardware truth. Callers who need the register directly read `ctrl.registers.csts()`. The cached `state` exists for the `NotDisabled` / `NotReady` precondition checks on `enable` and `shutdown`.
-
-`Controller.admin` provides `ready()`, `sq()`, `cq()`, and `pollOne(deadline, backoff)`. `ready()` returns `true` iff `enable` has completed successfully since the last `reset`; callers branch on it before calling any of the other three. `sq()`, `cq()`, and `pollOne` assert `admin.ready()` — calling them without a ready pair is a programmer error, not a runtime failure. The backing pair is a private field (`_pair`); callers read state only through `ready()`.
-
-## Approved API
+## API
 
 ```zig
-// src/controller/init.zig
-//! NVMe controller reset/enable/shutdown state machine.
-//! Spec: docs/specs/controller/init.md.
-
-const std = @import("std");
-
-const stdx = @import("stdx");
-
-const doorbell = @import("../core/doorbell.zig");
-const prp = @import("../core/prp.zig");
-const queue = @import("queue.zig");
-const registers = @import("../core/registers.zig");
-
-const Aqa = registers.Aqa;
-const Cc = registers.Cc;
-const ControllerRegisters = registers.ControllerRegisters;
-const Cqe = @import("../commands/cqe.zig").Cqe;
-const PageSize = prp.PageSize;
-const QueueBase = registers.QueueBase;
-const ShutdownNotification = registers.ShutdownNotification;
-const Sqe = @import("../commands/sqe.zig").Sqe;
-
 pub const State = enum {
     unknown,
     disabled,
@@ -163,28 +133,18 @@ pub const Error = error{
     PageSizeUnsupported,
     UnsupportedCommandSet,
     AdminPairMismatch,
-}
-    || QueueBase.Error
+} || QueueBase.Error
     || Aqa.Error
     || stdx.time.Duration.Error
     || queue.InitError
-    || queue.ReserveError
-    || queue.FlushError
+    || queue.SubmissionQueue.ReserveError
+    || queue.SubmissionQueue.FlushError
     || queue.PollError;
 
-pub const default_backoff_policy: stdx.time.Backoff.Policy = .{
-    .spin_iterations = 128,
-    .yield_iterations = 0,
-    .yield = null,
-    .initial_wait = stdx.time.Duration.fromMicros(1) catch unreachable,
-    .max_wait = stdx.time.Duration.fromMillis(1) catch unreachable,
-    .growth_shift = 1,
-};
+pub const default_backoff_policy: stdx.time.Backoff.Policy;
 
 pub fn Controller(comptime Backend: type) type {
     return struct {
-        const Self = @This();
-
         pub const Clock = stdx.time.Clock.Monotonic(Backend);
         pub const Pair = queue.Pair(Backend);
 
@@ -195,31 +155,18 @@ pub fn Controller(comptime Backend: type) type {
                 cid_words: []queue.CidAllocator.Word,
             };
 
-            _storage: Storage,
-            _pair: ?Pair = null,
-
-            pub fn ready(self: *const Admin) bool {
-                return self._pair != null;
-            }
-
-            pub fn sq(self: *Admin) *queue.SubmissionQueue {
-                std.debug.assert(self.ready());
-                return self._pair.?.sq();
-            }
-
-            pub fn cq(self: *Admin) *Pair.Cq {
-                std.debug.assert(self.ready());
-                return self._pair.?.cq();
-            }
-
+            pub fn ready(self: *const Admin) bool;
+            pub fn sq(self: *Admin) *queue.SubmissionQueue;
+            pub fn cq(self: *Admin) *Pair.Cq;
+            pub fn drain(
+                self: *Admin,
+                out: []queue.Completion,
+            ) queue.DrainError!usize;
             pub fn pollOne(
                 self: *Admin,
                 deadline: stdx.time.Deadline,
                 backoff: *stdx.time.Backoff,
-            ) queue.PollError!queue.Completion {
-                std.debug.assert(self.ready());
-                return self._pair.?.pollOne(deadline, backoff);
-            }
+            ) queue.PollError!queue.Completion;
         };
 
         pub const Config = struct {
@@ -236,317 +183,379 @@ pub fn Controller(comptime Backend: type) type {
         clock: Clock,
         db: doorbell.Doorbells,
         ready_timeout: stdx.time.Duration,
-        state: State = .unknown,
+        state: State,
 
-        pub fn init(config: Config) Error!Self {
-            const cap = config.registers.cap();
-            if (!cap.supportsNvmCommandSet()) return error.UnsupportedCommandSet;
-
-            const mps_bytes = config.page_size.bytes;
-            if (mps_bytes < cap.minPageSizeBytes()) return error.PageSizeUnsupported;
-            if (mps_bytes > cap.maxPageSizeBytes()) return error.PageSizeUnsupported;
-
-            if (config.admin.sq.len() != config.admin.cq.len()) return error.AdminPairMismatch;
-
-            const depth = std.math.cast(u16, config.admin.sq.len()) orelse return error.QueueDepthOutOfRange;
-
-            _ = try Aqa.fromDepths(.{
-                .submission_entries = depth,
-                .completion_entries = depth,
-            });
-            _ = try QueueBase.fromDmaAddr(config.admin.sq.dmaAddr());
-            _ = try QueueBase.fromDmaAddr(config.admin.cq.dmaAddr());
-            _ = try queue.CidAllocator.wrap(config.admin.cid_words, depth);
-
-            const ready_timeout = if (config.ready_timeout_override) |override|
-                override
-            else
-                try stdx.time.Duration.fromMillis(@as(i64, cap.readyTimeoutUnits500ms()) * 500);
-
-            return .{
-                .registers = config.registers,
-                .admin = .{ ._storage = config.admin },
-                .page_size = config.page_size,
-                .clock = config.clock,
-                .db = doorbell.Doorbells.fromRegisters(config.registers, cap),
-                .ready_timeout = ready_timeout,
-            };
-        }
-
-        pub fn doorbells(self: Self) doorbell.Doorbells {
-            return self.db;
-        }
-
+        pub fn init(config: Config) Error!@This();
+        pub fn doorbells(self: @This()) doorbell.Doorbells;
         pub fn reset(
-            self: *Self,
+            self: *@This(),
             deadline: stdx.time.Deadline,
             backoff: *stdx.time.Backoff,
-        ) Error!void {
-            const current = self.registers.cc();
-            if (current.en != 0) self.registers.storeCc(Cc.disabled());
-
-            try self.pollReady(false, deadline, backoff);
-            self.admin._pair = null;
-            self.state = .disabled;
-        }
-
+        ) Error!void;
         pub fn enable(
-            self: *Self,
+            self: *@This(),
             deadline: stdx.time.Deadline,
             backoff: *stdx.time.Backoff,
-        ) Error!void {
-            if (self.state != .disabled) return error.NotDisabled;
-
-            const storage = self.admin._storage;
-            const depth: u16 = @intCast(storage.sq.len());
-            const aqa = Aqa.fromDepths(.{
-                .submission_entries = depth,
-                .completion_entries = depth,
-            }) catch unreachable;
-            const asq = QueueBase.fromDmaAddr(storage.sq.dmaAddr()) catch unreachable;
-            const acq = QueueBase.fromDmaAddr(storage.cq.dmaAddr()) catch unreachable;
-
-            self.registers.storeAqa(aqa);
-            self.registers.storeAsq(asq);
-            self.registers.storeAcq(acq);
-
-            const shift_bits: u6 = @intCast(std.math.log2(self.page_size.bytes) - 12);
-            const mps: u4 = @intCast(shift_bits);
-            self.registers.storeCc(Cc.nvmEnabled(mps));
-
-            try self.pollReady(true, deadline, backoff);
-
-            const admin_sq = queue.SubmissionQueue.init(.{
-                .qid = .admin,
-                .capacity = depth,
-                .ring = storage.sq,
-                .cid_words = storage.cid_words,
-                .doorbell = self.db.submissionQueue(.admin),
-            }) catch unreachable;
-            const admin_cq = Pair.Cq.init(.{
-                .qid = .admin,
-                .capacity = depth,
-                .ring = storage.cq,
-                .doorbell = self.db.completionQueue(.admin),
-                .clock = self.clock,
-            }) catch unreachable;
-            self.admin._pair = Pair.init(admin_sq, admin_cq) catch unreachable;
-            self.state = .ready;
-        }
-
+        ) Error!void;
         pub fn shutdown(
-            self: *Self,
+            self: *@This(),
             kind: ShutdownNotification,
             deadline: stdx.time.Deadline,
             backoff: *stdx.time.Backoff,
-        ) Error!void {
-            if (self.state != .ready) return error.NotReady;
-            std.debug.assert(kind == .normal or kind == .abrupt);
-
-            const current = self.registers.cc();
-            self.registers.storeCc(current.withShutdown(kind));
-            self.state = .shutdown_occurring;
-
-            try self.pollShutdown(deadline, backoff);
-            self.state = .shutdown_complete;
-        }
-
+        ) Error!void;
         pub fn pollReady(
-            self: *Self,
+            self: *@This(),
             target: bool,
             deadline: stdx.time.Deadline,
             backoff: *stdx.time.Backoff,
-        ) Error!void {
-            const Predicate = struct {
-                ctrl: *Self,
-                target: bool,
-
-                pub fn call(p: @This()) Error!?void {
-                    const csts = p.ctrl.registers.csts();
-                    stdx.barrier.mmio.acquire();
-
-                    if (csts.fatal()) {
-                        p.ctrl.state = .fatal;
-                        return error.ControllerFatal;
-                    }
-
-                    if (csts.ready() == p.target) return {};
-                    return null;
-                }
-            };
-            return stdx.io.poll.until(
-                &self.clock,
-                deadline,
-                backoff,
-                Predicate{ .ctrl = self, .target = target },
-            );
-        }
-
+        ) Error!void;
         pub fn pollShutdown(
-            self: *Self,
+            self: *@This(),
             deadline: stdx.time.Deadline,
             backoff: *stdx.time.Backoff,
-        ) Error!void {
-            const Predicate = struct {
-                ctrl: *Self,
-
-                pub fn call(p: @This()) Error!?void {
-                    const csts = p.ctrl.registers.csts();
-                    stdx.barrier.mmio.acquire();
-
-                    if (csts.fatal()) {
-                        p.ctrl.state = .fatal;
-                        return error.ControllerFatal;
-                    }
-
-                    if (csts.shst == .complete) return {};
-                    return null;
-                }
-            };
-            return stdx.io.poll.until(
-                &self.clock,
-                deadline,
-                backoff,
-                Predicate{ .ctrl = self },
-            );
-        }
+        ) Error!void;
     };
 }
 ```
 
-## Behavior contract
+The signatures in this section are normative. Function bodies and private declarations are implementation details and MUST NOT be inferred from the signature-only snippets.
 
-| Operation | Allocation | Waiting | Bounds | Concurrency | Ordering | Errors |
-| --- | --- | --- | --- | --- | --- | --- |
-| `Controller(Backend).init` | never | never | O(1) | value type | none | `UnsupportedCommandSet`, `PageSizeUnsupported`, `AdminPairMismatch`, `Aqa.Error`, `QueueBase.Error`, `queue.CidAllocator.Error`, `stdx.time.Duration.Error` |
-| `Controller.doorbells` | never | never | O(1) | borrowed value | none | infallible |
-| `Controller.reset` | never | via `stdx.io.poll.until` composing caller `*Backoff` and `Deadline` | O(attempts) × (predicate + `Backoff.next`) | caller-serialized, single-owner over `*Backoff` | `mmio.acquire` after CSTS load | `Timeout`, `ControllerFatal` |
-| `Controller.enable` | never | via `stdx.io.poll.until` composing caller `*Backoff` and `Deadline` | O(attempts) × (predicate + `Backoff.next`) | caller-serialized, single-owner over `*Backoff` | `mmio.acquire` after CSTS load | `NotDisabled`, `Timeout`, `ControllerFatal` |
-| `Controller.shutdown` | never | via `stdx.io.poll.until` composing caller `*Backoff` and `Deadline` | O(attempts) × (predicate + `Backoff.next`) | caller-serialized, single-owner over `*Backoff` | `mmio.acquire` after CSTS load | `NotReady`, `Timeout`, `ControllerFatal` |
-| `Controller.pollReady` / `pollShutdown` | never | via `stdx.io.poll.until` composing caller `*Backoff` and `Deadline` | O(attempts) × (predicate + `Backoff.next`) | caller-serialized, single-owner over `*Backoff` | `mmio.acquire` after CSTS load | `Timeout`, `ControllerFatal` |
-| `Admin.ready` | never | never | O(1) | value type | none | infallible |
-| `Admin.sq` / `cq` / `pollOne` | never | as `Pair.pollOne` for `pollOne`; otherwise never | O(1) | borrowed pointer | as `Pair.pollOne` | asserts `admin.ready()`; `pollOne` returns `queue.PollError` |
+### `Controller.init`
 
-## Validation phases
+#### Contract
 
-Per `docs/specs/architecture.md` §"Validation phases":
+`init` MUST load `CAP` once and validate:
 
-- **Compile time.** `stdx.time.Clock.Monotonic(Backend)` signature-checks `Backend`. No layout assertions — semantic type.
-- **Public validation.**
-  - `init` rejects `!supportsNvmCommandSet()`, out-of-range `page_size`, admin buffer lengths that differ from the configured depths, mismatched admin SQ/CQ depths, invalid admin queue depth encoding, misaligned ASQ/ACQ DMA bases, CID bitmaps too small for the admin SQ depth, and `CAP.TO * 500` values that overflow `Duration.fromMillis`.
-  - `enable` consumes only init-validated admin queue depths, ASQ/ACQ bases, and CID bitmap storage; validation failures in those paths are unreachable after successful `init`.
-  - `enable` refuses `state != .disabled` with `error.NotDisabled`; callers reach `.disabled` through a successful `reset`, including the first bring-up from `.unknown`.
-  - `shutdown` refuses `state != .ready` with `error.NotReady`.
-- **Assertions.** `shutdown` asserts `kind == .normal or kind == .abrupt`. `Admin.sq`, `Admin.cq`, and `Admin.pollOne` assert `admin.ready()`.
+- the controller advertises the NVM Command Set;
+- `page_size` is within `CAP.MPSMIN..CAP.MPSMAX`;
+- admin SQ and CQ lengths are equal;
+- the admin depth converts to `u16` and is valid for `AQA`;
+- ASQ and ACQ DMA addresses are page-aligned;
+- the CID bitmap can represent the admin depth;
+- the derived `CAP.TO * 500 ms` duration is representable when no override is supplied.
 
-## Example usage
+On success, `init` MUST set state to `.unknown`, leave `admin.ready()` false, derive doorbells from `CAP.DSTRD`, and store either the verbatim timeout override or the `CAP.TO`-derived duration.
 
-Illustrative shape only; not part of the approved API.
+#### Errors and fault behavior
+
+`init` MUST return `error.UnsupportedCommandSet`, `error.PageSizeUnsupported`, or `error.AdminPairMismatch` for the corresponding validation failure. It MUST propagate applicable `Aqa.Error`, `QueueBase.Error`, `CidAllocator.Error`, and `Duration.Error` values. It MUST NOT write controller registers.
+
+#### Locking and waiting
+
+Never.
+
+#### Allocation behavior
+
+Never. `init` borrows all supplied mappings and buffers.
+
+#### NMI/interrupt safety
+
+`init` is not an interrupt or NMI entry point. The caller MUST provide exclusive initialization ownership.
+
+#### Memory ordering
+
+The `CAP` read uses the ordering contract owned by `ControllerRegisters.cap`.
+
+#### Concurrency effects
+
+The caller MUST NOT concurrently access the controller during initialization.
+
+#### Invalidation and lifetime
+
+All borrowed resources MUST outlive the returned controller.
+
+#### Complexity/progress
+
+O(1) validation and one `CAP` load.
+
+### `Controller.reset`
+
+#### Contract
+
+`reset` MUST load `CC`. If `CC.EN != 0`, it MUST write disabled `CC`. It MUST then wait for `CSTS.RDY == 0`.
+
+On success, `reset` MUST clear the admin pair and set state to `.disabled`. Calling `reset` when `CC.EN == 0` is permitted and still requires confirmation that `CSTS.RDY == 0`.
+
+#### State transitions
+
+- success: any state to `.disabled`;
+- fatal observation: any state to `.fatal`;
+- timeout: cached state and admin readiness remain unchanged, although `CC.EN` may already have been cleared.
+
+#### Errors and fault behavior
+
+`reset` MUST return `error.ControllerFatal` when the wait observes `CSTS.CFS`. It MUST return `error.Timeout` when the deadline expires. On either error, it MUST NOT clear the stored admin pair. A failed reset is not retry-transparent because the operation may already have written `CC.EN = 0`.
+
+#### Locking and waiting
+
+`reset` uses a transition wait and can spin, yield, or sleep according to the caller's `Backoff`.
+
+#### Allocation behavior
+
+Never.
+
+#### NMI/interrupt safety
+
+`reset` MUST NOT run in an interrupt or NMI context unless the caller's clock, `Backoff`, and platform permit every possible wait action. Normal callers MUST run it in serialized process or firmware control context.
+
+#### Memory ordering
+
+Every `CSTS` load is followed by `stdx.barrier.mmio.acquire()` before field evaluation.
+
+#### Concurrency effects
+
+The caller MUST stop queue submission and serialize controller and admin-pair access before reset.
+
+#### Invalidation and lifetime
+
+A successful reset invalidates every pointer previously returned by `Admin.sq()` or `Admin.cq()`, every outstanding admin handle, and all controller-side I/O queues. Caller-owned storage remains allocated and can be reused after re-enable.
+
+#### Complexity/progress
+
+O(wait attempts). Progress depends on controller state, deadline, clock, and backoff policy.
+
+### `Controller.enable`
+
+#### Contract
+
+`enable` MUST accept only state `.disabled`. It MUST program `AQA`, `ASQ`, `ACQ`, and an NVM-enabled `CC` with:
+
+- `CC.CSS = 0`;
+- `CC.AMS = 0`;
+- `CC.MPS = log2(page_size.bytes) - 12`;
+- `CC.IOSQES = 6`;
+- `CC.IOCQES = 4`;
+- `CC.CRIME = 0`;
+- `CC.EN = 1`.
+
+It MUST then wait for `CSTS.RDY == 1`. On success, it MUST construct the admin SQ and CQ over the stored buffers, compose the admin pair, and set state to `.ready`.
+
+#### State transitions
+
+- `.disabled` to `.ready` on success;
+- `.disabled` to `.fatal` on fatal observation;
+- `.disabled` remains cached on timeout, although controller registers have been programmed and `CC.EN` may remain set;
+- every other initial state returns `error.NotDisabled` without a transition.
+
+#### Errors and fault behavior
+
+For state other than `.disabled`, `enable` MUST return `error.NotDisabled` before it writes queue or controller configuration registers. During the wait, it MUST return `error.ControllerFatal` or `error.Timeout` as applicable. On wait failure, `admin.ready()` MUST remain false. A failed enable is not retry-transparent because controller registers have already been written.
+
+#### Locking and waiting
+
+`enable` uses a transition wait and can spin, yield, or sleep according to `Backoff`.
+
+#### Allocation behavior
+
+Never. Admin queue construction wraps stored caller-owned buffers and CID storage.
+
+#### NMI/interrupt safety
+
+The `reset` interrupt-context restriction applies.
+
+#### Memory ordering
+
+Register writes use the ordering contracts of `ControllerRegisters`. Every `CSTS` wait load is followed by `stdx.barrier.mmio.acquire()` before field evaluation.
+
+#### Concurrency effects
+
+The caller MUST provide exclusive controller ownership and MUST NOT use admin accessors until `enable` succeeds.
+
+#### Invalidation and lifetime
+
+A successful enable creates new admin queue state over the stored buffers. Handles or queue pointers from an earlier enable remain invalid.
+
+#### Complexity/progress
+
+O(wait attempts).
+
+### `Controller.shutdown`
+
+#### Contract
+
+`shutdown` MUST accept only state `.ready`. `kind` MUST be `.normal` or `.abrupt`. The operation MUST write `CC.SHN`, set state to `.shutdown_occurring`, and wait for `CSTS.SHST == .complete`.
+
+On success, it MUST set state to `.shutdown_complete` and preserve the admin pair for final completion drain.
+
+#### State transitions
+
+- `.ready` to `.shutdown_occurring` after the `CC.SHN` write;
+- `.shutdown_occurring` to `.shutdown_complete` on success;
+- `.shutdown_occurring` to `.fatal` on fatal observation;
+- `.shutdown_occurring` remains on timeout;
+- other states return `error.NotReady` without a transition.
+
+#### Errors and fault behavior
+
+`shutdown` MUST return `error.NotReady` before a register write when state is not `.ready`. An invalid `kind` is a programmer error and MUST trap when runtime safety checks are enabled. The wait MUST return `error.ControllerFatal` or `error.Timeout` as applicable. On timeout, the admin pair remains ready.
+
+#### Locking and waiting
+
+`shutdown` uses a transition wait and can spin, yield, or sleep according to `Backoff`.
+
+#### Allocation behavior
+
+Never.
+
+#### NMI/interrupt safety
+
+The `reset` interrupt-context restriction applies.
+
+#### Memory ordering
+
+Every `CSTS` wait load is followed by `stdx.barrier.mmio.acquire()` before field evaluation.
+
+#### Concurrency effects
+
+Before shutdown, the caller MUST stop new submissions and apply its queue-drain policy. The caller MUST serialize shutdown with every other controller transition.
+
+#### Invalidation and lifetime
+
+Successful shutdown preserves current admin queue pointers until reset or controller destruction.
+
+#### Complexity/progress
+
+O(wait attempts).
+
+### `pollReady` and `pollShutdown`
+
+#### Contract
+
+`pollReady` MUST wait until `CSTS.RDY == target`. `pollShutdown` MUST wait until `CSTS.SHST == .complete`. Each predicate MUST test `CSTS.CFS` before it tests the target condition.
+
+A successful direct poll operation MUST NOT change cached state. The transition methods own non-fatal state changes around these wait primitives.
+
+#### Errors and fault behavior
+
+Each operation MUST set state to `.fatal` and return `error.ControllerFatal` when it observes `CSTS.CFS`. Each operation MUST return `error.Timeout` when `Backoff.next` reports timeout. A timeout MUST NOT change cached state.
+
+#### Locking and waiting
+
+Each operation uses `stdx.io.poll.until` and can spin, yield, or sleep according to `Backoff`.
+
+#### Allocation behavior
+
+Never.
+
+#### NMI/interrupt safety
+
+These operations have the same interrupt-context restriction as `reset`.
+
+#### Memory ordering
+
+Each predicate MUST perform a volatile `CSTS` load, then `stdx.barrier.mmio.acquire()`, then field evaluation.
+
+#### Concurrency effects
+
+The caller MUST provide exclusive controller and `Backoff` ownership.
+
+#### Complexity/progress
+
+O(wait attempts).
+
+### Admin access and completion operations
+
+#### Contract
+
+`Admin.ready()` MUST return true exactly when the admin pair exists. `Admin.sq()` and `Admin.cq()` MUST return pointers to the initialized pair. `Admin.drain(out)` MUST delegate to `Pair.drain(out)`. `Admin.pollOne(deadline, backoff)` MUST delegate to `Pair.pollOne`.
+
+`Admin.sq`, `Admin.cq`, `Admin.drain`, and `Admin.pollOne` MUST assert `Admin.ready()`. Calling one before successful enable or after successful reset is a programmer error.
+
+#### Errors and fault behavior
+
+`Admin.drain` MUST propagate `queue.DrainError`. `Admin.pollOne` MUST propagate `queue.PollError`. Pair error and output-validity contracts apply unchanged.
+
+#### Locking and waiting
+
+Accessors and `drain` never wait. `pollOne` waits according to the pair contract.
+
+#### Allocation behavior
+
+Never.
+
+#### NMI/interrupt safety
+
+`Admin.drain` has the same interrupt-context contract as `Pair.drain`. Accessors provide no synchronization. `Admin.pollOne` has the same interrupt-context restriction as `Pair.pollOne`.
+
+#### Memory ordering
+
+Completion operations use the ordering contracts of the delegated pair operation.
+
+#### Concurrency effects
+
+The caller MUST serialize admin access and completion consumption with controller reset and enable.
+
+#### Invalidation and lifetime
+
+Pointers returned by `sq` and `cq` remain valid until successful reset or controller destruction. Successful reset invalidates them.
+
+#### Complexity/progress
+
+Accessors are O(1). Completion operation complexity matches the delegated pair operation.
+
+### `doorbells` and `ready_timeout`
+
+`doorbells()` MUST return the `Doorbells` value derived from the init-time `CAP.DSTRD`. It does not allocate, wait, synchronize, or access MMIO.
+
+`ready_timeout` MUST remain the init-time derived or overridden value. It is a suggestion for caller deadline construction and does not mutate automatically.
+
+`default_backoff_policy` MUST have:
+
+- `spin_iterations = 128`;
+- `yield_iterations = 0`;
+- `yield = null`;
+- `initial_wait = Duration.fromMicros(1)`;
+- `max_wait = Duration.fromMillis(1)`;
+- `growth_shift = 1`.
+
+The caller MAY copy or replace this policy. A caller that reuses one `Backoff` across transitions MUST reset it between transitions.
+
+## Implementation constraints
+
+- The implementation MUST NOT allocate, install callbacks, register interrupts, create locks, call syscalls directly, or use hidden globals.
+- Transition predicates MUST load `CSTS` on every attempt and MUST NOT cache it across attempts.
+- `enable` MUST use only init-validated queue depths, DMA addresses, page size, and CID storage; repeated validation in `enable` is not required.
+- Admin queue construction MUST occur only after the ready wait succeeds.
+- Admin pair removal MUST occur only after the reset wait succeeds.
+- `Admin.drain` and `Admin.pollOne` MUST delegate to the stored pair; they MUST NOT duplicate queue mechanics.
+
+## Testing
+
+Test file: `test/controller/init_test.zig`.
+
+Required tests MUST cover:
+
+- unsupported command-set rejection;
+- page size below `CAP.MPSMIN` and above `CAP.MPSMAX`;
+- unequal admin SQ/CQ lengths;
+- invalid queue depth and undersized CID bitmap;
+- misaligned ASQ and ACQ addresses;
+- `CAP.TO` timeout derivation and verbatim shorter or longer override;
+- doorbell derivation from `CAP.DSTRD`;
+- reset with `CC.EN` set and reset idempotence with `CC.EN` clear;
+- reset timeout and fatal status;
+- enable register bytes, state precondition, timeout, and fatal status;
+- admin readiness before enable, after enable, and after reset;
+- normal and abrupt shutdown encodings;
+- shutdown state precondition, timeout, fatal status, and admin-pair preservation;
+- `pollReady` MMIO acquire ordering;
+- reset-enable-reset state round trip;
+- reset-enable-shutdown state round trip;
+- initialized `Admin.drain` delegation with an empty CQ.
+
+A process-aborting assertion failure is not a runtime unit-test requirement because Zig provides no repository-supported `expectPanic` equivalent. Positive tests and source-level assertions enforce invalid `ShutdownNotification` and unready-admin contracts.
+
+## Usage examples
+
+The caller uses `ready_timeout` to construct a deadline and resets the caller-owned `Backoff` between transitions:
 
 ```zig
-const std = @import("std");
-
-const nvme = @import("nvme");
-const stdx = @import("stdx");
-
-const CidWord = nvme.controller.queue.CidAllocator.Word;
-const Controller = nvme.controller.init.Controller(MyHpetBackend);
-const Cqe = nvme.commands.cqe.Cqe;
-const Sqe = nvme.commands.sqe.Sqe;
-
-const depth: u16 = 32;
-var admin_sq_backing: [depth]Sqe align(@alignOf(Sqe)) = .{.{}} ** depth;
-var admin_cq_backing: [depth]Cqe align(@alignOf(Cqe)) = .{.{}} ** depth;
-var admin_cid_words: [stdx.bits.word.count(CidWord, depth)]CidWord = @splat(0);
-
-var ctrl = try Controller.init(.{
-    .registers = regs,
-    .admin = .{
-        .sq = try stdx.dma.Buffer(Sqe).init(&admin_sq_backing, asq_addr),
-        .cq = try stdx.dma.Buffer(Cqe).init(&admin_cq_backing, acq_addr),
-        .cid_words = &admin_cid_words,
-    },
-    .page_size = try nvme.core.prp.PageSize.fromBytes(4096),
-    .clock = .{ .backend = hpet_backend },
-});
-
-// Bring controller up.
 var backoff = stdx.time.Backoff.init(nvme.controller.init.default_backoff_policy);
 
-const reset_deadline = try stdx.time.Deadline.now(&ctrl.clock, try stdx.time.Duration.fromMillis(2000));
+const reset_deadline = try stdx.time.Deadline.now(&ctrl.clock, ctrl.ready_timeout);
 try ctrl.reset(reset_deadline, &backoff);
 backoff.reset();
 
 const enable_deadline = try stdx.time.Deadline.now(&ctrl.clock, ctrl.ready_timeout);
 try ctrl.enable(enable_deadline, &backoff);
-backoff.reset();
-
-// Admin queue pair is now ready; submit an Identify Controller.
-{
-    const sq = ctrl.admin.sq();
-    const reservation = try sq.reserveSlot();
-    errdefer sq.releaseReservation(reservation);
-
-    Sqe.init(reservation.slot, .{
-        .opcode = 0x06,
-        .command_id = reservation.command_id,
-        .namespace_id = .none,
-        .data_pointers = identify_dptr,
-        .cdw10 = 0x0000_0001,
-    });
-
-    _ = sq.stage(reservation);
-}
-
-try ctrl.admin.sq().flush();
-
-const poll_deadline = try stdx.time.Deadline.now(&ctrl.clock, try stdx.time.Duration.fromMillis(500));
-const completion = try ctrl.admin.pollOne(poll_deadline, &backoff);
-std.debug.assert(completion.statusIsSuccess());
-backoff.reset();
-
-// Later, orderly shutdown.
-const shutdown_deadline = try stdx.time.Deadline.now(&ctrl.clock, try stdx.time.Duration.fromSeconds(2));
-try ctrl.shutdown(.normal, shutdown_deadline, &backoff);
 ```
-
-## Required tests
-
-Test file `test/controller/init_test.zig`. Naming per `docs/guidelines/testing.md`.
-
-Test substrate: a caller-owned `[0x1000]u8 align(8)` register window with a scripted `CAP` value (`CSS.bit0 = 1`, `TO = 20` for a 10-second budget, `DSTRD = 0`, `MPSMIN = 0`, `MPSMAX = 0`), a counter-backed `stdx.time.Clock.Monotonic` backend that advances deterministically per `now()`, and scripted `CSTS` byte patterns the test rewrites between poll iterations.
-
-- `unit: controller init rejects UnsupportedCommandSet when CAP.CSS bit 0 is clear`.
-- `unit: controller init rejects PageSizeUnsupported below CAP.MPSMIN`.
-- `unit: controller init rejects PageSizeUnsupported above CAP.MPSMAX`.
-- `unit: controller init rejects AdminPairMismatch when admin SQ and CQ depths differ`.
-- `unit: controller init propagates QueueDepthOutOfRange from Aqa.fromDepths before enable writes registers`.
-- `unit: controller init propagates Misaligned from QueueBase.fromDmaAddr for unaligned admin SQ base`.
-- `unit: controller init propagates Misaligned from QueueBase.fromDmaAddr for unaligned admin CQ base`.
-- `unit: controller init rejects undersized admin CID bitmap before enable writes registers`.
-- `unit: controller init derives ready_timeout from CAP.TO 500ms units`.
-- `unit: controller init derives doorbells from CAP.DSTRD` — `ctrl.doorbells().submissionQueue(.admin).offset() == 0x1000`.
-- `unit: controller init honors ready_timeout_override as a verbatim replacement (shortens and lengthens)`.
-- `unit: controller reset clears CC.EN when set and polls CSTS.RDY to zero`.
-- `unit: controller reset is idempotent on double-call when CC.EN already clear`.
-- `unit: controller enable writes AQA ASQ ACQ and CC with mps css iosqes iocqes` — inspects exact bytes in the register buffer.
-- `unit: controller enable rejects NotDisabled when state is not disabled`.
-- `unit: controller enable returns Timeout when CSTS.RDY never sets`.
-- `unit: controller enable returns ControllerFatal when CSTS.CFS sets during poll` — state transitions to `.fatal`.
-- `unit: controller admin ready returns false before enable and true after enable success`.
-- `unit: controller enable transitions admin.ready() true when CSTS.RDY sets` — verifies `ctrl.admin.ready() == true` and `ctrl.admin.sq().qid == .admin` and `ctrl.admin.cq().qid == .admin`.
-- `unit: controller reset clears CC.EN and polls CSTS.RDY to zero and transitions admin.ready() false`.
-- `unit: controller reset returns Timeout when CSTS.RDY never clears`.
-- `unit: controller reset is idempotent with no CC write when CC.EN is already clear` — sentinel-poisoned CC lane confirms no CC write observed, `state` transitions to `.disabled`.
-- `unit: controller shutdown normal sets CC.SHN to 01b and polls SHST to complete`.
-- `unit: controller shutdown abrupt sets CC.SHN to 10b and polls SHST to complete`.
-- `unit: controller shutdown returns NotReady when state is not ready`.
-- `unit: controller shutdown returns Timeout when SHST never reports complete`.
-- `unit: controller shutdown preserves admin.ready() true for final completion drain`.
-- `unit: controller pollReady honors mmio.acquire ordering after each CSTS load` — behavioral check that the barrier lowers to `lfence` on x86_64.
-- `roundtrip: controller reset then enable then reset transitions through disabled ready disabled and admin.ready() follows`.
-- `roundtrip: controller reset then enable then shutdown normal transitions through disabled ready shutdown_complete`.
-
-## Open questions
-
-_(none)_
